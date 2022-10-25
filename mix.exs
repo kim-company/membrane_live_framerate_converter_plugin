@@ -22,8 +22,9 @@ defmodule Membrane.LiveFramerateConverter.MixProject do
   defp deps do
     [
       {:membrane_core, "~> 0.10.2"},
+      {:membrane_raw_video_format, "~> 0.2"},
       {:membrane_realtimer_plugin, github: "kim-company/membrane_realtimer_plugin", only: :test},
-      {:jason, "~> 1.4.0", only: :test},
+      {:jason, "~> 1.4.0", only: :test}
     ]
   end
 end

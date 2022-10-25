@@ -2,6 +2,7 @@ defmodule Membrane.LiveFramerateConverterTest do
   use ExUnit.Case
 
   alias Membrane.Testing.Pipeline
+  alias Membrane.RawVideo
 
   defmodule Source do
     @moduledoc """
@@ -10,23 +11,24 @@ defmodule Membrane.LiveFramerateConverterTest do
       the caller on buffer's pts and dts.
     """
     use Membrane.Source
-    alias Membrane.Buffer
 
-    def_output_pad :output, caps: :any
+    def_output_pad(:output, caps: :any)
 
-    def_options output: [
-                  spec: Enum.t(),
-                  default: [],
-                  description: """
-                  """
-                ],
-                caps: [
-                  spec: struct(),
-                  default: %Membrane.RemoteStream{},
-                  description: """
-                  Caps to be sent before the `output`.
-                  """
-                ]
+    def_options(
+      output: [
+        spec: Enum.t(),
+        default: [],
+        description: """
+        """
+      ],
+      caps: [
+        spec: struct(),
+        default: %Membrane.RemoteStream{},
+        description: """
+        Caps to be sent before the `output`.
+        """
+      ]
+    )
 
     @impl true
     def handle_init(opts) do
@@ -77,8 +79,10 @@ defmodule Membrane.LiveFramerateConverterTest do
     receive do
       {Pipeline, ^pid, {:handle_notification, {{:buffer, _}, :sink}}} ->
         raise "buffer overflow: (#{counter}/#{expected})"
+
       {Pipeline, ^pid, {:handle_element_end_of_stream, {:sink, :input}}} ->
         :ok
+
       _message ->
         assert_received_count(pid, expected, counter)
     end
@@ -88,25 +92,46 @@ defmodule Membrane.LiveFramerateConverterTest do
     receive do
       {Pipeline, ^pid, {:handle_notification, {{:buffer, _}, :sink}}} ->
         assert_received_count(pid, expected, counter + 1)
+
       {Pipeline, ^pid, {:handle_element_end_of_stream, {:sink, :input}}} ->
         raise "premature end-of-stream: #{counter}/#{expected}"
+
       _message ->
         assert_received_count(pid, expected, counter)
     end
   end
 
-  defp test_fixture_pipeline(path, framerate = {frames, time_unit}) do
+  defp test_fixture_pipeline(path, framerate = {frames, time_unit}, realtimer? \\ true) do
     input = parse_fixture(path)
     input_duration_ms = input |> input_duration() |> Membrane.Time.to_milliseconds()
     frame_duration_ms = time_unit / frames * 1000
-    expected_count = ceil(input_duration_ms / frame_duration_ms)
+    expected_count = floor(input_duration_ms / frame_duration_ms)
 
-    children = [
-      source: %Source{output: input},
-      realtimer: Membrane.Realtimer,
-      converter: %Membrane.LiveFramerateConverter{framerate: framerate},
-      sink: Membrane.Testing.Sink
-    ]
+    children =
+      [
+        source: %Source{
+          output: input,
+          caps: %RawVideo{
+            aligned: true,
+            framerate: {0, 1},
+            pixel_format: :I420,
+            width: 720,
+            height: 480
+          }
+        }
+      ] ++
+        if realtimer? do
+          [
+            realtimer: Membrane.Realtimer
+          ]
+        else
+          []
+        end ++
+        [
+          converter: %Membrane.LiveFramerateConverter{framerate: framerate},
+          sink: Membrane.Testing.Sink
+        ]
+
     {:ok, pid} = Pipeline.start_link(links: Membrane.ParentSpec.link_linear(children))
 
     assert_received_count(pid, expected_count, 0)
@@ -116,6 +141,11 @@ defmodule Membrane.LiveFramerateConverterTest do
   describe "produces the expected amount of buffers" do
     test "with a fast producer, short version" do
       test_fixture_pipeline("test/fixtures/short.jsonl", {30, 1})
+    end
+
+    @tag skip: true
+    test "with a fast producer" do
+      test_fixture_pipeline("test/fixtures/fast-pre.jsonl", {30, 1}, false)
     end
   end
 end
