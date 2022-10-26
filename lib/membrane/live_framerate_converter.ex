@@ -63,11 +63,16 @@ defmodule Membrane.LiveFramerateConverter do
   end
 
   def handle_process(:input, buffer, _ctx, state) do
-    if FrameWindow.accepts?(state.window, buffer) do
-      {{:ok, demand: :input}, %{state | window: FrameWindow.insert!(state.window, buffer)}}
+    window = state.window
+
+    if FrameWindow.accepts?(window, buffer) do
+      {{:ok, demand: :input}, %{state | window: FrameWindow.insert!(window, buffer)}}
     else
-      if FrameWindow.is_old?(state.window, buffer) do
-        Membrane.Logger.warn("dropping late buffer #{inspect(buffer.pts)} for window with range #{inspect window.starts_at}-#{inspect window.ends_at}")
+      if FrameWindow.is_old?(window, buffer) do
+        Membrane.Logger.warn(
+          "dropping late buffer #{inspect(buffer.pts)} for window with range #{inspect(window.starts_at)}-#{inspect(window.ends_at)}"
+        )
+
         {{:ok, demand: :input}, state}
       else
         {:ok, %{state | early_comers: [buffer | state.early_comers]}}
