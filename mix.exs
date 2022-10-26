@@ -3,7 +3,7 @@ defmodule Membrane.LiveFramerateConverter.MixProject do
 
   def project do
     [
-      app: :membrane_live_framerate_converter,
+      app: :membrane_live_framerate_converter_plugin,
       version: "0.1.0",
       elixir: "~> 1.14",
       start_permanent: Mix.env() == :prod,
