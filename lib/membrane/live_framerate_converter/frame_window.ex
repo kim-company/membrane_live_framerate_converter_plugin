@@ -120,7 +120,7 @@ defmodule Membrane.LiveFramerateConverter.FrameWindow do
     Enum.slice(slots, 0, index) ++ [slot] ++ Enum.slice(slots, Range.new(index + 1, -1))
   end
 
-  defp generate_slots({frames, seconds}, starts_at) do
+  def generate_slots({frames, seconds}, starts_at) do
     interval = Time.seconds(seconds)
     slot_interval = interval / frames
 
@@ -129,8 +129,8 @@ defmodule Membrane.LiveFramerateConverter.FrameWindow do
       starts_at = starts_at + slot_interval * index
 
       %Slot{
-        starts_at: starts_at,
-        ends_at: starts_at + slot_interval
+        starts_at: round(starts_at),
+        ends_at: round(starts_at + slot_interval)
       }
     end)
   end
