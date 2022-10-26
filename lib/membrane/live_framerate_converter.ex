@@ -58,10 +58,9 @@ defmodule Membrane.LiveFramerateConverter do
     else
       if FrameWindow.is_old?(state.window, buffer) do
         Logger.warn("dropping late buffer: #{inspect(buffer)}")
-        {{:ok, demand: :input}, state}
+        {:ok, state}
       else
-        # maybe we should not ask for more here.
-        {{:ok, demand: :input}, %{state | early_comers: [buffer | state.early_comers]}}
+        {:ok, %{state | early_comers: [buffer | state.early_comers]}}
       end
     end
   end
@@ -96,7 +95,7 @@ defmodule Membrane.LiveFramerateConverter do
         FrameWindow.insert!(window, x)
       end)
 
-    {{:ok, buffer_actions}, %{state | early_comers: Enum.reverse(early_comers), window: window}}
+    {{:ok, buffer_actions ++ [demand: :input]}, %{state | early_comers: Enum.reverse(early_comers), window: window}}
   end
 
   @impl true
