@@ -139,13 +139,16 @@ defmodule Membrane.LiveFramerateConverterTest do
   end
 
   describe "produces the expected amount of buffers" do
-    test "with a fast producer, short version" do
-      test_fixture_pipeline("test/fixtures/short.jsonl", {30, 1})
+    test "when there are missing frames in the input" do
+      test_fixture_pipeline("test/fixtures/low.jsonl", {30, 1})
     end
 
-    @tag skip: true
-    test "with a fast producer" do
-      test_fixture_pipeline("test/fixtures/fast-pre.jsonl", {30, 1}, false)
+    test "when there are too many frames" do
+      test_fixture_pipeline("test/fixtures/high.jsonl", {30, 1})
+    end
+
+    test "when the input framerate is variable" do
+      test_fixture_pipeline("test/fixtures/variable.jsonl", {30, 1})
     end
   end
 end

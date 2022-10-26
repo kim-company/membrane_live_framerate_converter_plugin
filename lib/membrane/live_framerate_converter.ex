@@ -35,7 +35,8 @@ defmodule Membrane.LiveFramerateConverter do
      %{
        framerate: opts.framerate,
        window: nil,
-       early_comers: []
+        early_comers: [],
+        closed?: false,
      }}
   end
 
@@ -72,18 +73,17 @@ defmodule Membrane.LiveFramerateConverter do
     {{:ok, start_timer: {:timer, Time.seconds(seconds)}}, state}
   end
 
-  @impl true
-  def handle_tick(:timer, _ctx, state) do
-    last_window = FrameWindow.fill_missing_frames(state.window)
+  defp fulfill_demand(state) do
+    window = FrameWindow.fill_missing_frames(state.window)
 
     buffer_actions =
-      last_window
+      window
       |> FrameWindow.get_buffers()
       |> Enum.map(fn x -> {:buffer, {:output, x}} end)
 
     # Take care of early comers. Those that are too new need to be buffered
     # again.
-    window = FrameWindow.next(last_window)
+    window = FrameWindow.next(window)
     early = Enum.reverse(state.early_comers)
 
     {accepted, early_comers} =
@@ -100,15 +100,24 @@ defmodule Membrane.LiveFramerateConverter do
   end
 
   @impl true
-  def handle_end_of_stream(:input, _ctx, state) do
-    buffer_actions =
-      state.window
-      |> FrameWindow.freeze()
-      |> FrameWindow.fill_missing_frames()
-      |> FrameWindow.get_buffers()
-      |> Enum.map(fn x -> {:buffer, {:output, x}} end)
+  def handle_tick(:timer, _ctx, state) do
+    if state.closed? and length(state.early_comers) == 0 do
+      buffer_actions =
+        state.window
+        |> FrameWindow.freeze()
+        |> FrameWindow.fill_missing_frames()
+        |> FrameWindow.get_buffers()
+        |> Enum.map(fn x -> {:buffer, {:output, x}} end)
 
-    {{:ok, buffer_actions ++ [end_of_stream: :output, stop_timer: :timer]},
-     %{state | window: nil}}
+      {{:ok, buffer_actions ++ [end_of_stream: :output, stop_timer: :timer]},
+       %{state | window: nil}}
+    else
+      fulfill_demand(state)
+    end
+  end
+
+  @impl true
+  def handle_end_of_stream(:input, _ctx, state) do
+    {:ok, %{state | closed?: true}}
   end
 end
