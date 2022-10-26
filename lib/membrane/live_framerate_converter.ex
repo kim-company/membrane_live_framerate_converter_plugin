@@ -9,7 +9,7 @@ defmodule Membrane.LiveFramerateConverter do
   alias Membrane.Time
   alias Membrane.LiveFramerateConverter.FrameWindow
 
-  require Logger
+  require Membrane.Logger
 
   # wait time before the timer starts ticking. When input buffers come in
   # realtime, it is mandatory to wait some ms before closing the window
@@ -67,8 +67,8 @@ defmodule Membrane.LiveFramerateConverter do
       {{:ok, demand: :input}, %{state | window: FrameWindow.insert!(state.window, buffer)}}
     else
       if FrameWindow.is_old?(state.window, buffer) do
-        Logger.warn("dropping late buffer: #{inspect(buffer)}")
-        {:ok, state}
+        Membrane.Logger.warn("dropping late buffer #{inspect(buffer.pts)} for window with range #{inspect window.starts_at}-#{inspect window.ends_at}")
+        {{:ok, demand: :input}, state}
       else
         {:ok, %{state | early_comers: [buffer | state.early_comers]}}
       end
