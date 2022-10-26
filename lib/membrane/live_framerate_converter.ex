@@ -46,6 +46,11 @@ defmodule Membrane.LiveFramerateConverter do
   end
 
   @impl true
+  def handle_caps(:input, %RawVideo{} = caps, _context, %{framerate: framerate} = state) do
+    {{:ok, caps: {:output, %{caps | framerate: framerate}}}, state}
+  end
+
+  @impl true
   def handle_process(:input, buffer, _ctx, state = %{window: nil}) do
     Process.send_after(self(), :start_timer, @timer_delay_ms)
     window = FrameWindow.new(state.framerate, buffer.pts)
