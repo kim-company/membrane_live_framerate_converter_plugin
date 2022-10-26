@@ -75,29 +75,16 @@ defmodule Membrane.LiveFramerateConverterTest do
     last - first
   end
 
-  defp assert_received_count(pid, expected, counter) when expected == counter do
+  defp count_received_buffers(pid, counter) do
     receive do
       {Pipeline, ^pid, {:handle_notification, {{:buffer, _}, :sink}}} ->
-        raise "buffer overflow: (#{counter}/#{expected})"
+        count_received_buffers(pid, counter + 1)
 
       {Pipeline, ^pid, {:handle_element_end_of_stream, {:sink, :input}}} ->
-        :ok
+        counter
 
       _message ->
-        assert_received_count(pid, expected, counter)
-    end
-  end
-
-  defp assert_received_count(pid, expected, counter) do
-    receive do
-      {Pipeline, ^pid, {:handle_notification, {{:buffer, _}, :sink}}} ->
-        assert_received_count(pid, expected, counter + 1)
-
-      {Pipeline, ^pid, {:handle_element_end_of_stream, {:sink, :input}}} ->
-        raise "premature end-of-stream: #{counter}/#{expected}"
-
-      _message ->
-        assert_received_count(pid, expected, counter)
+        count_received_buffers(pid, counter)
     end
   end
 
@@ -105,7 +92,7 @@ defmodule Membrane.LiveFramerateConverterTest do
     input = parse_fixture(path)
     input_duration_ms = input |> input_duration() |> Membrane.Time.to_milliseconds()
     frame_duration_ms = time_unit / frames * 1000
-    expected_count = floor(input_duration_ms / frame_duration_ms)
+    expected_count = ceil(input_duration_ms / frame_duration_ms)
 
     children =
       [
@@ -134,7 +121,7 @@ defmodule Membrane.LiveFramerateConverterTest do
 
     {:ok, pid} = Pipeline.start_link(links: Membrane.ParentSpec.link_linear(children))
 
-    assert_received_count(pid, expected_count, 0)
+    assert expected_count == count_received_buffers(pid, 0)
     Pipeline.terminate(pid, blocking?: true)
   end
 
@@ -149,6 +136,10 @@ defmodule Membrane.LiveFramerateConverterTest do
 
     test "when the input framerate is variable" do
       test_fixture_pipeline("test/fixtures/variable.jsonl", {30, 1})
+    end
+
+    test "when input is sparse" do
+      test_fixture_pipeline("test/fixtures/sparse.jsonl", {30, 1})
     end
   end
 end

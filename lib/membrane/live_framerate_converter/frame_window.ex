@@ -25,8 +25,8 @@ defmodule Membrane.LiveFramerateConverter.FrameWindow do
     :starts_at,
     :ends_at,
     :framerate,
-    :slots_pending,
-    :slots_ready
+    :slots,
+    :cursor
   ]
 
   def new(framerate = {_, seconds}, starts_at) do
@@ -34,8 +34,8 @@ defmodule Membrane.LiveFramerateConverter.FrameWindow do
       starts_at: starts_at,
       ends_at: starts_at + Time.seconds(seconds),
       framerate: framerate,
-      slots_pending: generate_slots(framerate, starts_at),
-      slots_ready: []
+      slots: generate_slots(framerate, starts_at),
+      cursor: 0
     }
   end
 
@@ -56,21 +56,16 @@ defmodule Membrane.LiveFramerateConverter.FrameWindow do
   end
 
   def insert!(window, buffer) do
-    [candidate_slot | slots] = window.slots_pending
+    candidate = Enum.at(window.slots, window.cursor)
 
-    if Slot.accepts?(candidate_slot, buffer) do
+    if Slot.accepts?(candidate, buffer) do
       # overrides buffers when too many frames are assigned to the same slot,
       # i.e., source has an higher framerate.
-      slot = Slot.set(candidate_slot, buffer)
-      %{window | slots_pending: [slot | slots]}
+      slot = Slot.set(candidate, buffer)
+      %{window | slots: update_slot_at(window.slots, slot, window.cursor)}
     else
       # assumption: buffer pts come strictly monotonically increasing order
-      window = %{
-        window
-        | slots_pending: slots,
-          slots_ready: window.slots_ready ++ [candidate_slot]
-      }
-
+      window = %{window | cursor: window.cursor + 1}
       insert!(window, buffer)
     end
   end
@@ -80,18 +75,9 @@ defmodule Membrane.LiveFramerateConverter.FrameWindow do
   its end but rather till the last filled slot. Used at stream termination.
   """
   def freeze(window) do
-    last_candidate = List.first(window.slots_pending)
-
-    ready =
-      if last_candidate != nil and Slot.is_filled?(last_candidate) do
-        window.slots_ready ++ [last_candidate]
-      else
-        window.slots_ready
-      end
-
-    %{ends_at: ends_at} = List.last(ready)
-
-    %{window | ends_at: ends_at, slots_pending: [], slots_ready: ready}
+    slots = Enum.slice(window.slots, 0, window.cursor + 1)
+    %{ends_at: ends_at} = List.last(slots)
+    %{window | ends_at: ends_at, slots: slots}
   end
 
   @doc """
@@ -99,25 +85,39 @@ defmodule Membrane.LiveFramerateConverter.FrameWindow do
       insert! calls till accept? returned false. Returns the list of buffers
       contained in the window.
   """
-  def make_buffers(%{slots_ready: ready, slots_pending: []}) do
-    Enum.map(ready, fn %Slot{starts_at: starts_at, buffer: buffer} ->
+  def make_buffers(%__MODULE__{slots: slots}) do
+    Enum.map(slots, fn %Slot{starts_at: starts_at, buffer: buffer} ->
       %Buffer{buffer | pts: ceil(starts_at), dts: nil}
     end)
   end
 
   def fill_missing_frames(window) do
-    slots_ready =
-      window.slots_ready
+    slots =
+      window.slots
       |> Enum.map_reduce(window.previous_last_buffer, fn x, previous_buffer ->
         if Slot.is_filled?(x) do
           {x, x.buffer}
         else
+          if previous_buffer == nil do
+            raise "attempted filling slot #{inspect(x)} with an empty buffer"
+          end
+
           {Slot.set(x, previous_buffer), previous_buffer}
         end
       end)
       |> elem(0)
 
-    %{window | slots_ready: slots_ready, last_buffer: List.last(slots_ready), slots_pending: []}
+    last_slot = List.last(slots)
+
+    if last_slot == nil or last_slot.buffer == nil do
+      raise "last slot is empty: #{inspect(window)}"
+    end
+
+    %{window | slots: slots, last_buffer: last_slot.buffer}
+  end
+
+  defp update_slot_at(slots, slot, index) do
+    Enum.slice(slots, 0, index) ++ [slot] ++ Enum.slice(slots, Range.new(index + 1, -1))
   end
 
   defp generate_slots({frames, seconds}, starts_at) do
