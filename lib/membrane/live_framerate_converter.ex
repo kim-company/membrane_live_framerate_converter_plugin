@@ -53,7 +53,11 @@ defmodule Membrane.LiveFramerateConverter do
   @impl true
   def handle_process(:input, buffer, _ctx, state = %{window: nil}) do
     Process.send_after(self(), :start_timer, @timer_delay_ms)
-    window = FrameWindow.new(state.framerate, buffer.pts)
+    window =
+      state.framerate
+      |> FrameWindow.new(buffer.pts)
+      |> FrameWindow.insert!(buffer)
+
     {{:ok, demand: :input}, %{state | window: window}}
   end
 
