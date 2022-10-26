@@ -35,8 +35,8 @@ defmodule Membrane.LiveFramerateConverter do
      %{
        framerate: opts.framerate,
        window: nil,
-        early_comers: [],
-        closed?: false,
+       early_comers: [],
+       closed?: false
      }}
   end
 
