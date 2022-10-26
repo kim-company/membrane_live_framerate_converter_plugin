@@ -53,6 +53,7 @@ defmodule Membrane.LiveFramerateConverter do
   @impl true
   def handle_process(:input, buffer, _ctx, state = %{window: nil}) do
     Process.send_after(self(), :start_timer, @timer_delay_ms)
+
     window =
       state.framerate
       |> FrameWindow.new(buffer.pts)
@@ -81,46 +82,45 @@ defmodule Membrane.LiveFramerateConverter do
     {{:ok, start_timer: {:timer, Time.seconds(seconds)}}, state}
   end
 
-  defp fulfill_demand(state) do
-    window = FrameWindow.fill_missing_frames(state.window)
+  @impl true
+  def handle_tick(:timer, _ctx, state) do
+    last_tick? = state.closed? and length(state.early_comers) == 0
+
+    window =
+      if last_tick? do
+        FrameWindow.freeze(state.window)
+      else
+        state.window
+      end
+
+    window = FrameWindow.fill_missing_frames(window)
 
     buffer_actions =
       window
-      |> FrameWindow.get_buffers()
+      |> FrameWindow.make_buffers()
       |> Enum.map(fn x -> {:buffer, {:output, x}} end)
 
-    # Take care of early comers. Those that are too new need to be buffered
-    # again.
-    window = FrameWindow.next(window)
-    early = Enum.reverse(state.early_comers)
-
-    {accepted, early_comers} =
-      Enum.split_while(early, fn x ->
-        FrameWindow.accepts?(window, x)
-      end)
-
-    window =
-      Enum.reduce(accepted, window, fn x, window ->
-        FrameWindow.insert!(window, x)
-      end)
-
-    {{:ok, buffer_actions ++ [demand: :input]}, %{state | early_comers: Enum.reverse(early_comers), window: window}}
-  end
-
-  @impl true
-  def handle_tick(:timer, _ctx, state) do
-    if state.closed? and length(state.early_comers) == 0 do
-      buffer_actions =
-        state.window
-        |> FrameWindow.freeze()
-        |> FrameWindow.fill_missing_frames()
-        |> FrameWindow.get_buffers()
-        |> Enum.map(fn x -> {:buffer, {:output, x}} end)
-
+    if last_tick? do
       {{:ok, buffer_actions ++ [end_of_stream: :output, stop_timer: :timer]},
        %{state | window: nil}}
     else
-      fulfill_demand(state)
+      # Take care of early comers. Those that are too new need to be buffered
+      # again.
+      window = FrameWindow.next(window)
+      early = Enum.reverse(state.early_comers)
+
+      {accepted, early_comers} =
+        Enum.split_while(early, fn x ->
+          FrameWindow.accepts?(window, x)
+        end)
+
+      window =
+        Enum.reduce(accepted, window, fn x, window ->
+          FrameWindow.insert!(window, x)
+        end)
+
+      {{:ok, buffer_actions ++ [demand: :input]},
+       %{state | early_comers: Enum.reverse(early_comers), window: window}}
     end
   end
 
