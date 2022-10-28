@@ -11,20 +11,24 @@ defmodule Membrane.LiveFramerateConverter do
 
   require Membrane.Logger
 
-  # wait time before the timer starts ticking. When input buffers come in
-  # realtime, it is mandatory to wait some ms before closing the window
-  # otherwise the filter won't receive all buffers belonging to this timeframe.
-  @timer_delay_ms 500
+  @default_latency 500 |> Time.milliseconds()
 
-  def_options(
-    framerate: [
-      spec: {pos_integer(), pos_integer()},
-      default: {30, 1},
-      description: """
-      Target framerate.
-      """
-    ]
-  )
+  def_options framerate: [
+                spec: {pos_integer(), pos_integer()},
+                default: {30, 1},
+                description: """
+                Target framerate.
+                """
+              ],
+              latency: [
+                spec: Time.t(),
+                default: @default_latency,
+                description: """
+                Delay introduced by LiveFramerateConverter.
+                When input buffers come in realtime, it is mandatory to wait some ms before
+                closing the window otherwise the filter won't receive all buffers belonging to this timeframe.
+                """
+              ]
 
   def_input_pad(:input, caps: {RawVideo, aligned: true}, demand_unit: :buffers)
   def_output_pad(:output, caps: {RawVideo, aligned: true}, mode: :push)
@@ -33,6 +37,7 @@ defmodule Membrane.LiveFramerateConverter do
   def handle_init(%__MODULE__{} = opts) do
     {:ok,
      %{
+       latency: opts.latency,
        framerate: opts.framerate,
        window: nil,
        early_comers: [],
@@ -52,7 +57,7 @@ defmodule Membrane.LiveFramerateConverter do
 
   @impl true
   def handle_process(:input, buffer, _ctx, state = %{window: nil}) do
-    Process.send_after(self(), :start_timer, @timer_delay_ms)
+    Process.send_after(self(), :start_timer, Time.as_milliseconds(state.latency))
 
     window =
       state.framerate
