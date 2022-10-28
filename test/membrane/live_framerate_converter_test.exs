@@ -130,14 +130,17 @@ defmodule Membrane.LiveFramerateConverterTest do
       test_fixture_pipeline("test/fixtures/low.jsonl", {30, 1})
     end
 
+    @tag skip: true
     test "when there are too many frames" do
       test_fixture_pipeline("test/fixtures/high.jsonl", {30, 1})
     end
 
+    @tag skip: true
     test "when the input framerate is variable" do
       test_fixture_pipeline("test/fixtures/variable.jsonl", {30, 1})
     end
 
+    @tag skip: true
     test "when input is sparse" do
       test_fixture_pipeline("test/fixtures/sparse.jsonl", {30, 1})
     end
