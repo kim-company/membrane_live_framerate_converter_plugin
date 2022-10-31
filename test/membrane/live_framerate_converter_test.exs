@@ -92,7 +92,7 @@ defmodule Membrane.LiveFramerateConverterTest do
     input = parse_fixture(path)
     input_duration_ms = input |> input_duration() |> Membrane.Time.to_milliseconds()
     frame_duration_ms = time_unit / frames * 1000
-    expected_count = ceil(input_duration_ms / frame_duration_ms)
+    expected_count = floor(input_duration_ms / frame_duration_ms)
 
     children =
       [
