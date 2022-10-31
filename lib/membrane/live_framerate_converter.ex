@@ -32,6 +32,10 @@ defmodule Membrane.LiveFramerateConverter do
       Ratio.gte?(pts, slot.starts_at) and Ratio.lte?(pts, slot.ends_at)
     end
 
+    def old?(slot, %Buffer{pts: pts}) do
+      Ratio.lte?(pts, slot.starts_at)
+    end
+
     def set(slot, buffer) do
       %{slot | buffer: %Membrane.Buffer{buffer | pts: slot.starts_at, dts: nil}}
     end
@@ -109,7 +113,7 @@ defmodule Membrane.LiveFramerateConverter do
   end
 
   @impl true
-  def handle_tick(:timer, _ctx, state) do
+  def handle_tick(:timer, ctx, state) do
     case Q.pop(state.queue) do
       {{:value, :end_of_stream}, queue} ->
         {{:ok, stop_timer: :timer, end_of_stream: :output}, %{state | queue: queue}}
@@ -118,8 +122,18 @@ defmodule Membrane.LiveFramerateConverter do
         {{:ok, demand: {:input, 1}, buffer: {:output, buffer}}, %{state | queue: queue}}
 
       {:empty, _queue} ->
-        Membrane.Logger.warn("queue is empty")
-        {:ok, state}
+        Membrane.Logger.warn("queue is empty, duplicating buffers")
+
+        # Trick to generate a buffer that starts at the beginning of the next
+        # slot with duplicated contents of the last one.
+        %Slot{buffer: next} = Slot.next(state.current_slot)
+
+        # TODO: slots are overlapping and the next buffer would be accepted by
+        # the previous slot as well. This is a workaround to avoid dangerous
+        # changes at this time.
+        next = %Membrane.Buffer{next | pts: next.pts + Time.milliseconds(5)}
+        state = push_buffer(state, next)
+        handle_tick(:timer, ctx, state)
     end
   end
 
@@ -142,9 +156,14 @@ defmodule Membrane.LiveFramerateConverter do
     if Slot.accepts?(state.current_slot, buffer) do
       %{state | current_slot: Slot.set(state.current_slot, buffer)}
     else
-      queue = Q.push(state.queue, state.current_slot)
-      current_slot = Slot.next(state.current_slot)
-      push_buffer(%{state | queue: queue, current_slot: current_slot}, buffer)
+      if Slot.old?(state.current_slot, buffer) do
+        Membrane.Logger.warn("buffer with pts @ #{inspect buffer.pts} received, min threashold is @ #{inspect state.current_slot.starts_at} - dropping")
+        state
+      else
+        queue = Q.push(state.queue, state.current_slot)
+        current_slot = Slot.next(state.current_slot)
+        push_buffer(%{state | queue: queue, current_slot: current_slot}, buffer)
+      end
     end
   end
 end
