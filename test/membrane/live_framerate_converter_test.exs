@@ -92,7 +92,7 @@ defmodule Membrane.LiveFramerateConverterTest do
     input = parse_fixture(path)
     input_duration_ms = input |> input_duration() |> Membrane.Time.to_milliseconds()
     frame_duration_ms = time_unit / frames * 1000
-    expected_count = ceil(input_duration_ms / frame_duration_ms)
+    expected_count = floor(input_duration_ms / frame_duration_ms)
 
     children =
       [
@@ -130,17 +130,14 @@ defmodule Membrane.LiveFramerateConverterTest do
       test_fixture_pipeline("test/fixtures/low.jsonl", {30, 1})
     end
 
-    @tag skip: true
     test "when there are too many frames" do
       test_fixture_pipeline("test/fixtures/high.jsonl", {30, 1})
     end
 
-    @tag skip: true
     test "when the input framerate is variable" do
       test_fixture_pipeline("test/fixtures/variable.jsonl", {30, 1})
     end
 
-    @tag skip: true
     test "when input is sparse" do
       test_fixture_pipeline("test/fixtures/sparse.jsonl", {30, 1})
     end

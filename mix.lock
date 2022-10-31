@@ -1,8 +1,8 @@
 %{
-  "bunch": {:hex, :bunch, "1.3.2", "9a3647e8bf8859482206c554d907b13d60aa8e40a3b82057a34bf71c0e23a0ae", [:mix], [], "hexpm", "dd89f2df6e6284c06cf9c44be5aae622f2a5a0804098167a0cb5370542c8c22b"},
+  "bunch": {:hex, :bunch, "1.4.0", "ba6dc15b346498f4f1be602f505e341ecb2cdc32c1bccb3865fcc3d1f834e987", [:mix], [], "hexpm", "a6e5cff50be7e8fad7d4875bb890abb80d4bcfcdd76553ef29dc978dabd25e85"},
   "coerce": {:hex, :coerce, "1.0.1", "211c27386315dc2894ac11bc1f413a0e38505d808153367bd5c6e75a4003d096", [:mix], [], "hexpm", "b44a691700f7a1a15b4b7e2ff1fa30bebd669929ac8aa43cffe9e2f8bf051cf1"},
   "jason": {:hex, :jason, "1.4.0", "e855647bc964a44e2f67df589ccf49105ae039d4179db7f6271dfd3843dc27e6", [:mix], [{:decimal, "~> 1.0 or ~> 2.0", [hex: :decimal, repo: "hexpm", optional: true]}], "hexpm", "79a3791085b2a0f743ca04cec0f7be26443738779d09302e01318f97bdb82121"},
-  "kim_q": {:git, "https://github.com/kim-company/kim_q.git", "606c14a94ab9d13bc2023cdb4dd0d9a1101fc921", []},
+  "kim_q": {:git, "https://github.com/kim-company/kim_q.git", "4a4924efead4230e488375fe9e2aa817931cd05a", []},
   "membrane_core": {:hex, :membrane_core, "0.10.2", "d2d17039f6df746e4a3c47da32f51867fbafe528272cdd9b226d16b1032bc337", [:mix], [{:bunch, "~> 1.3", [hex: :bunch, repo: "hexpm", optional: false]}, {:qex, "~> 0.3", [hex: :qex, repo: "hexpm", optional: false]}, {:ratio, "~> 2.0", [hex: :ratio, repo: "hexpm", optional: false]}, {:telemetry, "~> 1.0", [hex: :telemetry, repo: "hexpm", optional: false]}], "hexpm", "6a4f290f919ada66c772807d64d5830be2962b7c13a2f2bc9ace416a1cd19ee1"},
   "membrane_raw_video_format": {:hex, :membrane_raw_video_format, "0.2.0", "cda8eb207cf65c93690a19001aba3edbb2ba5d22abc8068a1f6a785ba871e8cf", [:mix], [], "hexpm", "6b716fc24f60834323637c95aaaa0f99be23fcc6a84a21af70195ef50185b634"},
   "membrane_realtimer_plugin": {:git, "https://github.com/kim-company/membrane_realtimer_plugin.git", "6b48835d86d930ca6d07edceb702de10b6a53497", []},
