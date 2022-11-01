@@ -90,26 +90,28 @@ defmodule Membrane.LiveFramerateConverter do
   end
 
   @impl true
-  def handle_process(:input, buffer, _ctx, state = %{loading?: true}) do
+  def handle_process_list(:input, buffers, _ctx, state = %{loading?: true}) do
     state =
       if state.current_slot == nil do
+        buffer = List.first(buffers)
         %{state | current_slot: Slot.new(buffer.pts, state.period)}
       else
         state
       end
 
-    state = push_buffer(state, buffer)
+    state = Enum.reduce(buffers, state, fn buffer, state -> push_buffer(state, buffer) end)
 
     if state.queue.count >= state.queue_capacity do
       # using parent clock w/o knowing the implications.
       {{:ok, [start_timer: {:timer, state.period}]}, %{state | loading?: false}}
     else
-      {:ok, state}
+      {{:ok, demand: {:input, state.queue_capacity - state.queue.count}}, state}
     end
   end
 
-  def handle_process(:input, buffer, _ctx, state) do
-    {:ok, push_buffer(state, buffer)}
+  def handle_process_list(:input, buffers, _ctx, state) do
+    state = Enum.reduce(buffers, state, fn buffer, state -> push_buffer(state, buffer) end)
+    {:ok, state}
   end
 
   @impl true
@@ -157,7 +159,10 @@ defmodule Membrane.LiveFramerateConverter do
       %{state | current_slot: Slot.set(state.current_slot, buffer)}
     else
       if Slot.old?(state.current_slot, buffer) do
-        Membrane.Logger.warn("buffer with pts @ #{inspect buffer.pts} received, min threashold is @ #{inspect state.current_slot.starts_at} - dropping")
+        Membrane.Logger.warn(
+          "buffer with pts @ #{inspect(buffer.pts)} received, min threashold is @ #{inspect(state.current_slot.starts_at)} - dropping"
+        )
+
         state
       else
         queue = Q.push(state.queue, state.current_slot)
