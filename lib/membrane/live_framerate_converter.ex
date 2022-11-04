@@ -89,6 +89,11 @@ defmodule Membrane.LiveFramerateConverter do
     {{:ok, caps: {:output, %{caps | framerate: framerate}}}, state}
   end
 
+  def build_demand_action(state) do
+    preferred = state.queue_capacity - state.queue.count
+    if preferred <= 0, do: [], else: [demand: {:input, preferred}]
+  end
+
   @impl true
   def handle_process_list(:input, buffers, _ctx, state = %{loading?: true}) do
     state =
@@ -105,7 +110,7 @@ defmodule Membrane.LiveFramerateConverter do
       # using parent clock w/o knowing the implications.
       {{:ok, [start_timer: {:timer, state.period}]}, %{state | loading?: false}}
     else
-      {{:ok, demand: {:input, state.queue_capacity - state.queue.count}}, state}
+      {{:ok, build_demand_action(state)}, state}
     end
   end
 
@@ -121,7 +126,8 @@ defmodule Membrane.LiveFramerateConverter do
         {{:ok, stop_timer: :timer, end_of_stream: :output}, %{state | queue: queue}}
 
       {{:value, %Slot{buffer: buffer}}, queue} ->
-        {{:ok, demand: {:input, 1}, buffer: {:output, buffer}}, %{state | queue: queue}}
+        state = %{state | queue: queue}
+        {{:ok, build_demand_action(state) ++ [buffer: {:output, buffer}]}, state}
 
       {:empty, _queue} ->
         Membrane.Logger.warn("queue is empty, duplicating buffers")
