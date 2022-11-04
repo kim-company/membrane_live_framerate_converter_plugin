@@ -60,7 +60,7 @@ defmodule Membrane.LiveFramerateConverter do
                 default: "live-framerate-converter"
               ]
 
-  def_input_pad(:input, caps: {RawVideo, aligned: true}, demand_unit: :buffers, mode: :push)
+  def_input_pad(:input, caps: {RawVideo, aligned: true}, demand_unit: :buffers)
   def_output_pad(:output, caps: {RawVideo, aligned: true}, mode: :push)
 
   @impl true
@@ -77,6 +77,11 @@ defmodule Membrane.LiveFramerateConverter do
        loading?: true,
        current_slot: nil
      }}
+  end
+
+  @impl true
+  def handle_prepared_to_playing(_ctx, state) do
+    {{:ok, demand: {:input, state.queue_capacity}}, state}
   end
 
   @impl true
@@ -100,7 +105,7 @@ defmodule Membrane.LiveFramerateConverter do
       # using parent clock w/o knowing the implications.
       {{:ok, [start_timer: {:timer, state.period}]}, %{state | loading?: false}}
     else
-      {:ok, state}
+      {{:ok, demand: {:input, state.queue_capacity - state.queue.count}}, state}
     end
   end
 
@@ -116,7 +121,7 @@ defmodule Membrane.LiveFramerateConverter do
         {{:ok, stop_timer: :timer, end_of_stream: :output}, %{state | queue: queue}}
 
       {{:value, %Slot{buffer: buffer}}, queue} ->
-        {{:ok, buffer: {:output, buffer}}, %{state | queue: queue}}
+        {{:ok, demand: {:input, 1}, buffer: {:output, buffer}}, %{state | queue: queue}}
 
       {:empty, _queue} ->
         Membrane.Logger.warn("queue is empty, duplicating buffers")
