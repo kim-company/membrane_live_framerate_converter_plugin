@@ -141,5 +141,9 @@ defmodule Membrane.LiveFramerateConverterTest do
     test "when input is sparse" do
       test_fixture_pipeline("test/fixtures/sparse.jsonl", {30, 1})
     end
+
+    test "works w/o realtimer" do
+      test_fixture_pipeline("test/fixtures/sparse.jsonl", {30, 1}, false)
+    end
   end
 end
