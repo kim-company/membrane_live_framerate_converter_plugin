@@ -54,25 +54,21 @@ defmodule Membrane.LiveFramerateConverter do
                 description: """
                 How many buffer this element will collect internally before starting its job.
                 """
-              ],
-              telemetry_label: [
-                spec: String.t(),
-                default: "live-framerate-converter"
               ]
 
-  def_input_pad(:input, caps: {RawVideo, aligned: true}, demand_unit: :buffers)
-  def_output_pad(:output, caps: {RawVideo, aligned: true}, mode: :push)
+  def_input_pad(:input, accepted_format: %RawVideo{aligned: true}, demand_unit: :buffers)
+  def_output_pad(:output, accepted_format: %RawVideo{aligned: true}, mode: :push)
 
   @impl true
-  def handle_init(%__MODULE__{} = opts) do
+  def handle_init(_ctx, opts) do
     {frames, seconds} = opts.framerate
     period = round(Time.seconds(seconds) / frames)
 
-    {:ok,
+    {[],
      %{
        period: period,
        framerate: opts.framerate,
-       queue: Q.new(opts.telemetry_label),
+       queue: Qex.new(),
        queue_capacity: opts.queue_capacity,
        loading?: true,
        current_slot: nil
@@ -80,18 +76,13 @@ defmodule Membrane.LiveFramerateConverter do
   end
 
   @impl true
-  def handle_prepared_to_playing(_ctx, state) do
-    {{:ok, demand: {:input, state.queue_capacity}}, state}
+  def handle_playing(_ctx, state) do
+    {[demand: {:input, state.queue_capacity}], state}
   end
 
   @impl true
-  def handle_caps(:input, %RawVideo{} = caps, _context, %{framerate: framerate} = state) do
-    {{:ok, caps: {:output, %{caps | framerate: framerate}}}, state}
-  end
-
-  def build_demand_action(state) do
-    preferred = state.queue_capacity - state.queue.count
-    if preferred <= 0, do: [], else: [demand: {:input, preferred}]
+  def handle_stream_format(:input, format, _context, %{framerate: framerate} = state) do
+    {[stream_format: {:output, %RawVideo{format | framerate: framerate}}], state}
   end
 
   @impl true
@@ -106,11 +97,11 @@ defmodule Membrane.LiveFramerateConverter do
 
     state = Enum.reduce(buffers, state, fn buffer, state -> push_buffer(state, buffer) end)
 
-    if state.queue.count >= state.queue_capacity do
+    if Enum.count(state.queue) >= state.queue_capacity do
       # using parent clock w/o knowing the implications.
-      {{:ok, [start_timer: {:timer, state.period}]}, %{state | loading?: false}}
+      {[start_timer: {:timer, state.period}], %{state | loading?: false}}
     else
-      {{:ok, build_demand_action(state)}, state}
+      {build_demand_action(state), state}
     end
   end
 
@@ -121,13 +112,13 @@ defmodule Membrane.LiveFramerateConverter do
 
   @impl true
   def handle_tick(:timer, ctx, state) do
-    case Q.pop(state.queue) do
+    case Qex.pop(state.queue) do
       {{:value, :end_of_stream}, queue} ->
-        {{:ok, stop_timer: :timer, end_of_stream: :output}, %{state | queue: queue}}
+        {[stop_timer: :timer, end_of_stream: :output], %{state | queue: queue}}
 
       {{:value, %Slot{buffer: buffer}}, queue} ->
         state = %{state | queue: queue}
-        {{:ok, build_demand_action(state) ++ [buffer: {:output, buffer}]}, state}
+        {build_demand_action(state) ++ [buffer: {:output, buffer}], state}
 
       {:empty, _queue} ->
         Membrane.Logger.warn("queue is empty, duplicating buffers")
@@ -156,8 +147,8 @@ defmodule Membrane.LiveFramerateConverter do
         []
       end
 
-    state = %{state | queue: Q.push(state.queue, :end_of_stream), loading?: false}
-    {{:ok, actions}, state}
+    state = %{state | queue: Qex.push(state.queue, :end_of_stream), loading?: false}
+    {actions, state}
   end
 
   defp push_buffer(state, buffer) do
@@ -171,10 +162,15 @@ defmodule Membrane.LiveFramerateConverter do
 
         state
       else
-        queue = Q.push(state.queue, state.current_slot)
+        queue = Qex.push(state.queue, state.current_slot)
         current_slot = Slot.next(state.current_slot)
         push_buffer(%{state | queue: queue, current_slot: current_slot}, buffer)
       end
     end
+  end
+
+  defp build_demand_action(state) do
+    preferred = state.queue_capacity - Enum.count(state.queue)
+    if preferred <= 0, do: [], else: [demand: {:input, preferred}]
   end
 end
