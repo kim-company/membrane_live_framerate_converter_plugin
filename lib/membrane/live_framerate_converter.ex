@@ -107,7 +107,7 @@ defmodule Membrane.LiveFramerateConverter do
 
   def handle_process_list(:input, buffers, _ctx, state) do
     state = Enum.reduce(buffers, state, fn buffer, state -> push_buffer(state, buffer) end)
-    {:ok, state}
+    {[], state}
   end
 
   @impl true
