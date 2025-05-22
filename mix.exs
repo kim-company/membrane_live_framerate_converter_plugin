@@ -21,7 +21,7 @@ defmodule Membrane.LiveFramerateConverter.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
-      {:membrane_core, ">= 0.11.0"},
+      {:membrane_core, "~> 0.12"},
       {:membrane_raw_video_format, "~> 0.2"},
       {:membrane_live_filter_plugin,
        github: "kim-company/membrane_live_filter_plugin", only: :test},
