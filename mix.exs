@@ -23,10 +23,7 @@ defmodule Membrane.LiveFramerateConverter.MixProject do
     [
       {:membrane_core, ">= 0.11.0"},
       {:membrane_raw_video_format, "~> 0.2"},
-      {:membrane_live_filter_plugin,
-       github: "kim-company/membrane_live_filter_plugin", only: :test},
-      {:kim_q, github: "kim-company/kim_q"},
-      {:jason, "~> 1.4.0", only: :test}
+      {:membrane_realtimer_plugin, "~> 0.10", only: :test}
     ]
   end
 end

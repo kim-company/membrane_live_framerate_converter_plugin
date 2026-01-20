@@ -31,7 +31,7 @@ defmodule Membrane.LiveFramerateConverterTest do
     path
     |> File.stream!()
     |> Stream.map(&String.trim/1)
-    |> Stream.map(&Jason.decode!/1)
+    |> Stream.map(&JSON.decode!/1)
     |> Stream.map(fn %{"pts" => pts} -> %Membrane.Buffer{pts: pts, dts: pts, payload: <<>>} end)
     |> Enum.into([])
   end
@@ -57,11 +57,11 @@ defmodule Membrane.LiveFramerateConverterTest do
 
   defp test_fixture_pipeline(path, framerate = {frames, time_unit}, realtimer? \\ true) do
     input = parse_fixture(path)
-    input_duration_ms = input |> input_duration() |> Membrane.Time.round_to_milliseconds()
+    input_duration_ms = div(input_duration(input), 1_000_000)
     frame_duration_ms = time_unit / frames * 1000
     expected_count = floor(input_duration_ms / frame_duration_ms)
 
-    links = [
+    spec = [
       child(:source, %Membrane.Testing.Source{
         output: Membrane.Testing.Source.output_from_buffers(input),
         stream_format: %RawVideo{
@@ -74,7 +74,7 @@ defmodule Membrane.LiveFramerateConverterTest do
       })
       |> then(fn structure ->
         if realtimer? do
-          structure |> child(:realtimer, Membrane.LiveFilter)
+          structure |> child(:realtimer, Membrane.Realtimer)
         else
           structure
         end
@@ -83,9 +83,9 @@ defmodule Membrane.LiveFramerateConverterTest do
       |> child(:sink, Membrane.Testing.Sink)
     ]
 
-    pid = Membrane.Testing.Pipeline.start_link_supervised!(structure: links)
+    pid = Membrane.Testing.Pipeline.start_link_supervised!(spec: spec)
 
     assert expected_count == count_received_buffers(pid, 0)
-    Pipeline.terminate(pid, blocking?: true)
+    Pipeline.terminate(pid)
   end
 end
