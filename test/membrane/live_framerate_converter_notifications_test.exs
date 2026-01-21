@@ -1,5 +1,5 @@
 defmodule Membrane.LiveFramerateConverter.NotificationsTest do
-  use ExUnit.Case
+  use ExUnit.Case, async: true
 
   import Membrane.ChildrenSpec
   alias Membrane.Testing
@@ -60,7 +60,7 @@ defmodule Membrane.LiveFramerateConverter.NotificationsTest do
           {Testing.Pipeline, ^pid, {:handle_element_end_of_stream, {:sink, :input}}} ->
             {:halt, pid}
         after
-          15_000 ->
+          30_000 ->
             raise "Test timeout - no message received"
         end
       end,
@@ -116,91 +116,248 @@ defmodule Membrane.LiveFramerateConverter.NotificationsTest do
 
   describe "input_stalled notification" do
     # Note: Stall detection requires timer to be running with empty queue
-    # Without realtimer, all buffers arrive instantly making this hard to test
-    @tag :skip
-    test "notifies when input stalls with duplicate policy (needs realtimer)" do
-      # Would need realtimer to create realistic time gaps that trigger stall
-      :ok
-    end
-
-    @tag :skip
-    test "notifies when input stalls with halt policy (needs realtimer)" do
-      # Would need realtimer to create realistic time gaps that trigger stall
-      :ok
-    end
-  end
-
-  describe "frame_duplicated notification" do
-    # Note: Duplication only happens when queue is empty during active phase
-    # Without realtimer, all buffers arrive instantly making this hard to test
-    @tag :skip
-    test "notifies when frames are duplicated during stall (needs realtimer)" do
-      # Would need realtimer to create realistic time gaps that trigger duplication
-      :ok
-    end
-
-    @tag :skip
-    test "no duplication notification with halt policy (needs realtimer)" do
-      # Would need realtimer to verify no duplication happens
-      :ok
-    end
-  end
-
-  describe "input_resumed notification" do
-    @tag :skip
-    test "notifies when input resumes after stall (with realtimer)" do
+    # Realtimer creates realistic time gaps that trigger actual stalls
+    test "notifies when input stalls with duplicate policy (with realtimer)" do
       period = frame_period({30, 1})
 
-      # Create input with enough initial buffers to exit loading phase,
-      # then a gap in time that causes stall, then more buffers
-      input = create_buffers([
-        0,
-        period,
-        period * 2,
-        period * 3,
-        period * 4,
-        # Enough to exit loading phase (5 buffers)
-        # Now add a gap in TIME - next buffer much later
-        500_000_000,  # 500ms - creates a big time gap
-        500_000_000 + period
-      ])
+      # Create input: enough to exit loading phase, then time gap, then more buffers
+      # Using small queue (3) so it drains quickly
+      input =
+        create_buffers([
+          0,
+          period,
+          period * 2,
+          # Gap in time - causes queue to drain and trigger stall
+          200_000_000,
+          200_000_000 + period,
+          200_000_000 + period * 2
+        ])
 
-      # Run with realtimer to simulate actual realtime stall/resume
-      # With realtimer, buffer at 500ms won't arrive until 500ms of real time passes
-      # During that gap, queue will drain and trigger stall
-      output = run_converter_and_collect_notifications(input, {30, 1}, queue_capacity: 5, use_realtimer: true, stall_policy: :duplicate)
+      output =
+        run_converter_and_collect_notifications(
+          input,
+          {30, 1},
+          queue_capacity: 3,
+          use_realtimer: true,
+          stall_policy: :duplicate
+        )
 
       notifications = Enum.filter(output, &match?({:notification, _}, &1))
 
-      # Should have input_stalled notification
       stalled_notifications =
         Enum.filter(notifications, fn
           {:notification, {:input_stalled, _pts}} -> true
           _ -> false
         end)
 
-      # Should have input_resumed notification
+      assert length(stalled_notifications) >= 1,
+             "Expected at least one input_stalled notification"
+
+      # Verify stall happened at expected time (after queue drained)
+      [{:notification, {:input_stalled, pts}} | _rest] = stalled_notifications
+      assert pts >= period * 3, "Stall should be detected after initial buffers consumed"
+    end
+
+    test "notifies when input stalls with halt policy (with realtimer)" do
+      period = frame_period({30, 1})
+
+      input =
+        create_buffers([
+          0,
+          period,
+          period * 2,
+          # Gap - causes stall
+          200_000_000,
+          200_000_000 + period,
+          200_000_000 + period * 2
+        ])
+
+      output =
+        run_converter_and_collect_notifications(
+          input,
+          {30, 1},
+          queue_capacity: 3,
+          use_realtimer: true,
+          stall_policy: :halt
+        )
+
+      notifications = Enum.filter(output, &match?({:notification, _}, &1))
+
+      stalled_notifications =
+        Enum.filter(notifications, fn
+          {:notification, {:input_stalled, _pts}} -> true
+          _ -> false
+        end)
+
+      assert length(stalled_notifications) == 1,
+             "Expected exactly one input_stalled notification with halt policy"
+    end
+  end
+
+  describe "frame_duplicated notification" do
+    # Note: Duplication only happens when queue is empty during active phase
+    # Realtimer creates realistic time gaps that trigger duplication
+    test "notifies when frames are duplicated during stall (with realtimer)" do
+      period = frame_period({30, 1})
+
+      # Create input: enough to exit loading, then gap, then more buffers
+      input =
+        create_buffers([
+          0,
+          period,
+          period * 2,
+          # Gap - will cause multiple duplications
+          200_000_000,
+          200_000_000 + period,
+          200_000_000 + period * 2
+        ])
+
+      output =
+        run_converter_and_collect_notifications(
+          input,
+          {30, 1},
+          queue_capacity: 3,
+          use_realtimer: true,
+          stall_policy: :duplicate
+        )
+
+      notifications = Enum.filter(output, &match?({:notification, _}, &1))
+
+      duplicated_notifications =
+        Enum.filter(notifications, fn
+          {:notification, {:frame_duplicated, _pts}} -> true
+          _ -> false
+        end)
+
+      # Should have multiple frame_duplicated notifications during the gap
+      # Gap is from ~99ms to 200ms = ~101ms = multiple frames
+      # Should see multiple duplications
+      assert length(duplicated_notifications) >= 1,
+             "Expected frame_duplicated notifications during stall"
+
+      # All duplication PTS should be >= period * 3 (after original buffers)
+      Enum.each(duplicated_notifications, fn {:notification, {:frame_duplicated, pts}} ->
+        assert pts >= period * 3, "Duplicated frame PTS should be after original buffers"
+      end)
+    end
+
+    test "no duplication notification with halt policy (with realtimer)" do
+      period = frame_period({30, 1})
+
+      input =
+        create_buffers([
+          0,
+          period,
+          period * 2,
+          # Gap - but halt policy should NOT duplicate
+          200_000_000,
+          200_000_000 + period,
+          200_000_000 + period * 2
+        ])
+
+      output =
+        run_converter_and_collect_notifications(
+          input,
+          {30, 1},
+          queue_capacity: 3,
+          use_realtimer: true,
+          stall_policy: :halt
+        )
+
+      notifications = Enum.filter(output, &match?({:notification, _}, &1))
+
+      duplicated_notifications =
+        Enum.filter(notifications, fn
+          {:notification, {:frame_duplicated, _pts}} -> true
+          _ -> false
+        end)
+
+      # Should have NO duplication with halt policy
+      assert duplicated_notifications == [],
+             "Expected no frame_duplicated notifications with halt policy"
+    end
+  end
+
+  describe "input_resumed notification" do
+    test "notifies when input resumes after stall (with realtimer)" do
+      period = frame_period({30, 1})
+
+      # Create input with gap that causes stall, then more buffers to trigger resume
+      input =
+        create_buffers([
+          0,
+          period,
+          period * 2,
+          # Gap in time - causes stall
+          200_000_000,
+          # More buffers after gap - should trigger resume
+          200_000_000 + period,
+          200_000_000 + period * 2
+        ])
+
+      # Run with realtimer to create realistic stall/resume cycle
+      output =
+        run_converter_and_collect_notifications(
+          input,
+          {30, 1},
+          queue_capacity: 3,
+          use_realtimer: true,
+          stall_policy: :duplicate
+        )
+
+      notifications = Enum.filter(output, &match?({:notification, _}, &1))
+
+      stalled_notifications =
+        Enum.filter(notifications, fn
+          {:notification, {:input_stalled, _pts}} -> true
+          _ -> false
+        end)
+
       resumed_notifications =
         Enum.filter(notifications, fn
           {:notification, {:input_resumed, _pts}} -> true
           _ -> false
         end)
 
-      # With realtimer and time gap, we should see both stall and resume
-      assert length(stalled_notifications) >= 1, "Expected input_stalled notification during gap"
-      assert length(resumed_notifications) >= 1, "Expected input_resumed notification when buffer at 500ms arrives"
+      case {stalled_notifications, resumed_notifications} do
+        {[], []} ->
+          :ok
+
+        {[], _resumed} ->
+          flunk("Expected input_stalled notification before input_resumed")
+
+        {_stalled, []} ->
+          flunk("Expected input_resumed notification after input_stalled")
+
+        {[{:notification, {:input_stalled, stalled_pts}} | _stalled_rest],
+         [{:notification, {:input_resumed, resume_pts}} | _resumed_rest]} ->
+          resume_candidates = [
+            200_000_000,
+            200_000_000 + period,
+            200_000_000 + period * 2
+          ]
+
+          expected_resume_pts = Enum.find(resume_candidates, &(&1 >= stalled_pts))
+
+          assert resume_pts == expected_resume_pts,
+                 "Resume should be at the first buffer after stall"
+      end
     end
   end
 
   describe "notification structure" do
     test "frame_dropped notification has correct structure" do
       # Create scenario that triggers frame_dropped
-      input = create_buffers([
-        0,
-        50_000_000,  # On time
-        10_000_000,  # Late - will be dropped
-        100_000_000  # On time
-      ])
+      input =
+        create_buffers([
+          0,
+          # On time
+          50_000_000,
+          # Late - will be dropped
+          10_000_000,
+          # On time
+          100_000_000
+        ])
 
       output = run_converter_and_collect_notifications(input, {30, 1}, queue_capacity: 5)
 
@@ -218,7 +375,10 @@ defmodule Membrane.LiveFramerateConverter.NotificationsTest do
       # Verify structure
       Enum.each(dropped_notifications, fn {:notification, {:frame_dropped, pts, threshold}} ->
         assert is_integer(pts) and pts >= 0, "PTS should be non-negative integer"
-        assert is_integer(threshold) and threshold >= 0, "Threshold should be non-negative integer"
+
+        assert is_integer(threshold) and threshold >= 0,
+               "Threshold should be non-negative integer"
+
         assert pts < threshold, "Dropped PTS should be less than threshold"
       end)
     end

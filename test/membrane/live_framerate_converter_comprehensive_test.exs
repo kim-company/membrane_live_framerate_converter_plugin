@@ -1,5 +1,5 @@
 defmodule Membrane.LiveFramerateConverterComprehensiveTest do
-  use ExUnit.Case
+  use ExUnit.Case, async: true
 
   import Membrane.ChildrenSpec
   import Membrane.Testing.Assertions
@@ -82,6 +82,7 @@ defmodule Membrane.LiveFramerateConverterComprehensiveTest do
     |> Enum.chunk_every(2, 1, :discard)
     |> Enum.each(fn [b1, b2] ->
       actual_interval = b2.pts - b1.pts
+
       assert actual_interval == expected_interval,
              "Expected interval #{expected_interval}, got #{actual_interval} between PTS #{b1.pts} and #{b2.pts}"
     end)
@@ -113,7 +114,8 @@ defmodule Membrane.LiveFramerateConverterComprehensiveTest do
     end
 
     test "output PTS values are monotonically increasing" do
-      input = create_even_buffers(0, 10, 10_000_000)  # 10 buffers, 10ms apart
+      # 10 buffers, 10ms apart
+      input = create_even_buffers(0, 10, 10_000_000)
 
       output = run_converter(input, {30, 1})
 
@@ -121,8 +123,10 @@ defmodule Membrane.LiveFramerateConverterComprehensiveTest do
     end
 
     test "output buffers are evenly spaced at target framerate" do
-      period = frame_period({60, 1})  # ~16.67ms for 60fps
-      input = create_even_buffers(0, 20, 5_000_000)  # 20 buffers, 5ms apart
+      # ~16.67ms for 60fps
+      period = frame_period({60, 1})
+      # 20 buffers, 5ms apart
+      input = create_even_buffers(0, 20, 5_000_000)
 
       output = run_converter(input, {60, 1})
 
@@ -233,7 +237,8 @@ defmodule Membrane.LiveFramerateConverterComprehensiveTest do
 
     test "two buffers very close together" do
       # Both buffers in same slot
-      input = create_buffers([0, 1_000_000])  # 0ms and 1ms
+      # 0ms and 1ms
+      input = create_buffers([0, 1_000_000])
 
       output = run_converter(input, {30, 1})
 
@@ -279,7 +284,8 @@ defmodule Membrane.LiveFramerateConverterComprehensiveTest do
     test "drops excess buffers when input > target framerate" do
       # Input at 60fps, output at 30fps
       period_60fps = frame_period({60, 1})
-      input = create_even_buffers(0, 60, period_60fps)  # 1 second at 60fps
+      # 1 second at 60fps
+      input = create_even_buffers(0, 60, period_60fps)
 
       output = run_converter(input, {30, 1})
 
@@ -290,13 +296,18 @@ defmodule Membrane.LiveFramerateConverterComprehensiveTest do
     test "uses most recent buffer in each slot" do
       period_30fps = frame_period({30, 1})
       # Multiple buffers in first slot, then one more to trigger push
-      input = create_buffers([
-        0,
-        5_000_000,    # 5ms - in same slot as 0
-        10_000_000,   # 10ms - in same slot (replaces previous)
-        period_30fps,  # Exactly at slot boundary - still accepted into slot 0
-        period_30fps + 1_000_000  # Beyond slot boundary - triggers push of slot 0
-      ])
+      input =
+        create_buffers([
+          0,
+          # 5ms - in same slot as 0
+          5_000_000,
+          # 10ms - in same slot (replaces previous)
+          10_000_000,
+          # Exactly at slot boundary - still accepted into slot 0
+          period_30fps,
+          # Beyond slot boundary - triggers push of slot 0
+          period_30fps + 1_000_000
+        ])
 
       output = run_converter(input, {30, 1})
 
@@ -312,7 +323,8 @@ defmodule Membrane.LiveFramerateConverterComprehensiveTest do
     test "duplicates buffers when input < target framerate" do
       # Input at 15fps, output at 30fps
       period_15fps = frame_period({15, 1})
-      input = create_even_buffers(0, 15, period_15fps)  # 1 second at 15fps
+      # 1 second at 15fps
+      input = create_even_buffers(0, 15, period_15fps)
 
       output = run_converter(input, {30, 1})
 
@@ -336,11 +348,13 @@ defmodule Membrane.LiveFramerateConverterComprehensiveTest do
   describe "late buffer handling" do
     test "drops buffers that arrive too late" do
       # Buffer at 100ms, then late buffer at 5ms, then buffer at 200ms
-      input = create_buffers([
-        100_000_000,
-        5_000_000,   # Too late! Should be dropped
-        200_000_000
-      ])
+      input =
+        create_buffers([
+          100_000_000,
+          # Too late! Should be dropped
+          5_000_000,
+          200_000_000
+        ])
 
       output = run_converter(input, {30, 1})
 
@@ -361,11 +375,15 @@ defmodule Membrane.LiveFramerateConverterComprehensiveTest do
     test "processes buffers in arrival order, not PTS order" do
       # When buffers arrive out of order, later ones get dropped if too old
       period = frame_period({30, 1})
-      input = create_buffers([
-        0,
-        100_000_000,  # Jump forward
-        50_000_000    # Late - would be between first two, but arrives last
-      ])
+
+      input =
+        create_buffers([
+          0,
+          # Jump forward
+          100_000_000,
+          # Late - would be between first two, but arrives last
+          50_000_000
+        ])
 
       output = run_converter(input, {30, 1})
 
@@ -411,14 +429,15 @@ defmodule Membrane.LiveFramerateConverterComprehensiveTest do
   describe "output count verification" do
     test "output count matches duration at target framerate" do
       # 1 second of input at variable rate
-      input = create_buffers([
-        0,
-        10_000_000,
-        50_000_000,
-        100_000_000,
-        500_000_000,
-        1_000_000_000
-      ])
+      input =
+        create_buffers([
+          0,
+          10_000_000,
+          50_000_000,
+          100_000_000,
+          500_000_000,
+          1_000_000_000
+        ])
 
       output = run_converter(input, {30, 1})
 

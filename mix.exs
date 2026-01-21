@@ -4,10 +4,30 @@ defmodule Membrane.LiveFramerateConverter.MixProject do
   def project do
     [
       app: :membrane_live_framerate_converter_plugin,
-      version: "0.1.0",
-      elixir: "~> 1.14",
+      version: "1.0.0",
+      elixir: "~> 1.19",
       start_permanent: Mix.env() == :prod,
+      source_url: "https://github.com/kim-company/membrane_live_framerate_converter_plugin",
+      name: "Membrane Live Framerate Converter Plugin",
+      description: description(),
+      package: package(),
       deps: deps()
+    ]
+  end
+
+  defp description do
+    """
+    """
+  end
+
+  defp package do
+    [
+      maintainers: ["KIM Keep In Mind"],
+      files: ~w(lib mix.exs README.md LICENSE),
+      licenses: ["Apache-2.0"],
+      links: %{
+        "GitHub" => "https://github.com/kim-company/membrane_live_framerate_converter_plugin"
+      }
     ]
   end
 
@@ -23,7 +43,8 @@ defmodule Membrane.LiveFramerateConverter.MixProject do
     [
       {:membrane_core, ">= 0.11.0"},
       {:membrane_raw_video_format, "~> 0.2"},
-      {:membrane_realtimer_plugin, "~> 0.10", only: :test}
+      {:membrane_realtimer_plugin, "~> 0.10", only: :test},
+      {:ex_doc, ">= 0.0.0", only: :dev, runtime: false}
     ]
   end
 end

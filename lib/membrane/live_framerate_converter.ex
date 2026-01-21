@@ -28,6 +28,14 @@ defmodule Membrane.LiveFramerateConverter do
       |> set(prev.buffer)
     end
 
+    def next_empty(prev = %__MODULE__{}) do
+      %__MODULE__{
+        starts_at: prev.ends_at,
+        ends_at: prev.ends_at + (prev.ends_at - prev.starts_at),
+        buffer: nil
+      }
+    end
+
     def accepts?(slot, %Buffer{pts: pts}) do
       pts >= slot.starts_at and pts < slot.ends_at
     end
@@ -85,6 +93,8 @@ defmodule Membrane.LiveFramerateConverter do
        queue_capacity: opts.queue_capacity,
        loading?: true,
        current_slot: nil,
+       current_slot_in_queue?: false,
+       last_buffer: nil,
        stall_policy: opts.stall_policy,
        stalled?: false
      }}
@@ -111,17 +121,35 @@ defmodule Membrane.LiveFramerateConverter do
 
     {push_actions, state} = push_buffer(state, buffer)
 
-    if :queue.len(state.queue) >= state.queue_capacity do
+    buffered_count =
+      :queue.len(state.queue) +
+        if state.current_slot != nil and state.current_slot.buffer != nil and
+             not state.current_slot_in_queue? do
+          1
+        else
+          0
+        end
+
+    if buffered_count >= state.queue_capacity do
       # using parent clock w/o knowing the implications.
-      {push_actions ++ [start_timer: {:timer, state.period}], %{state | loading?: false}}
+      {enqueue_actions, state} = enqueue_current_slot(state)
+
+      {push_actions ++ enqueue_actions ++ [start_timer: {:timer, state.period}],
+       %{state | loading?: false}}
     else
       {push_actions ++ build_demand_action(state), state}
     end
   end
 
   def handle_buffer(:input, buffer, _ctx, state) do
+    resume? = state.stalled? and not Slot.old?(state.current_slot, buffer)
     {actions, state} = push_buffer(state, buffer)
-    {actions, state}
+
+    if resume? and state.stall_policy == :duplicate do
+      {[notify_parent: {:input_resumed, buffer.pts}] ++ actions, %{state | stalled?: false}}
+    else
+      {actions, state}
+    end
   end
 
   @impl true
@@ -131,19 +159,18 @@ defmodule Membrane.LiveFramerateConverter do
         {[stop_timer: :timer, end_of_stream: :output], %{state | queue: queue}}
 
       {{:value, %Slot{buffer: buffer}}, queue} ->
-        state = %{state | queue: queue}
-
-        # Detect resume: if was stalled and now have data
-        actions =
-          if state.stalled? do
-            [notify_parent: {:input_resumed, buffer.pts}] ++
-            build_demand_action(state) ++
-            [buffer: {:output, buffer}]
+        state =
+          if state.current_slot_in_queue? and state.current_slot != nil and
+               state.current_slot.starts_at == buffer.pts do
+            current_slot = %{state.current_slot | buffer: nil}
+            %{state | queue: queue, current_slot_in_queue?: false, current_slot: current_slot}
           else
-            build_demand_action(state) ++ [buffer: {:output, buffer}]
+            %{state | queue: queue}
           end
 
-        {actions, %{state | stalled?: false}}
+        actions = build_demand_action(state) ++ [buffer: {:output, buffer}]
+
+        {actions, state}
 
       {:empty, _queue} ->
         handle_queue_empty(state.stall_policy, ctx, state)
@@ -154,18 +181,27 @@ defmodule Membrane.LiveFramerateConverter do
     # Send stall notification only on first stall detection
     actions = if not state.stalled?, do: [notify_parent: {:input_stalled, state.current_slot.ends_at}], else: []
 
-    # Generate a buffer that starts at the beginning of the next slot
-    # with duplicated contents of the last one.
-    %Slot{buffer: %Membrane.Buffer{} = next} = Slot.next(state.current_slot)
+    if state.last_buffer == nil do
+      {actions, %{state | stalled?: true}}
+    else
+      next_slot = Slot.next_empty(state.current_slot)
+      duplicated = %{state.last_buffer | pts: next_slot.starts_at, dts: nil}
+      next_slot = %{next_slot | buffer: duplicated}
 
-    # Send duplication notification
-    actions = actions ++ [notify_parent: {:frame_duplicated, next.pts}]
+      # Send duplication notification
+      actions = actions ++ [notify_parent: {:frame_duplicated, duplicated.pts}]
 
-    state = %{state | stalled?: true}
-    {push_actions, state} = push_buffer(state, next)
+      state = %{
+        state
+        | stalled?: true,
+          queue: :queue.in(next_slot, state.queue),
+          current_slot: next_slot,
+          current_slot_in_queue?: true
+      }
 
-    {new_actions, new_state} = handle_tick(:timer, ctx, state)
-    {actions ++ push_actions ++ new_actions, new_state}
+      {new_actions, new_state} = handle_tick(:timer, ctx, state)
+      {actions ++ new_actions, new_state}
+    end
   end
 
   defp handle_queue_empty(:halt, _ctx, state) do
@@ -195,22 +231,57 @@ defmodule Membrane.LiveFramerateConverter do
 
   defp push_buffer(state, buffer) do
     if Slot.accepts?(state.current_slot, buffer) do
-      {[], %{state | current_slot: Slot.set(state.current_slot, buffer)}}
+      slot =
+        if state.stall_policy == :halt do
+          %{state.current_slot | buffer: %{buffer | dts: nil}}
+        else
+          Slot.set(state.current_slot, buffer)
+        end
+
+      state = %{state | current_slot: slot, last_buffer: slot.buffer}
+
+      state =
+        if not state.loading? and not state.current_slot_in_queue? do
+          %{state | queue: :queue.in(slot, state.queue), current_slot_in_queue?: true}
+        else
+          state
+        end
+
+      {[], state}
     else
       if Slot.old?(state.current_slot, buffer) do
         {[notify_parent: {:frame_dropped, buffer.pts, state.current_slot.starts_at}], state}
       else
         # Only push slot to queue if it has a buffer (don't push empty slots)
         queue =
-          if state.current_slot.buffer != nil do
+          if state.current_slot.buffer != nil and not state.current_slot_in_queue? do
             :queue.in(state.current_slot, state.queue)
+        else
+          state.queue
+        end
+
+        current_slot =
+          if state.stall_policy == :duplicate and state.loading? and
+               state.current_slot.buffer != nil do
+            Slot.next(state.current_slot)
           else
-            state.queue
+            Slot.next_empty(state.current_slot)
           end
 
-        current_slot = Slot.next(state.current_slot)
-        push_buffer(%{state | queue: queue, current_slot: current_slot}, buffer)
+        push_buffer(
+          %{state | queue: queue, current_slot: current_slot, current_slot_in_queue?: false},
+          buffer
+        )
       end
+    end
+  end
+
+  defp enqueue_current_slot(state) do
+    if state.current_slot != nil and state.current_slot.buffer != nil and
+         not state.current_slot_in_queue? do
+      {[], %{state | queue: :queue.in(state.current_slot, state.queue), current_slot_in_queue?: true}}
+    else
+      {[], state}
     end
   end
 

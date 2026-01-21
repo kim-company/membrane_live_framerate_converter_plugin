@@ -1,5 +1,5 @@
 defmodule Membrane.LiveFramerateConverter.StallPolicyTest do
-  use ExUnit.Case
+  use ExUnit.Case, async: true
 
   import Membrane.ChildrenSpec
   alias Membrane.Testing
@@ -103,9 +103,11 @@ defmodule Membrane.LiveFramerateConverter.StallPolicyTest do
 
       # Verify every frame is at exact period boundaries
       Enum.with_index(output)
-      |> Enum.take(10)  # Check first 10 frames
+      # Check first 10 frames
+      |> Enum.take(10)
       |> Enum.each(fn {buffer, idx} ->
         expected_pts = idx * period
+
         assert buffer.pts == expected_pts,
                "Frame #{idx} has PTS #{buffer.pts}, expected #{expected_pts}"
       end)
@@ -124,7 +126,8 @@ defmodule Membrane.LiveFramerateConverter.StallPolicyTest do
       assert hd(output).payload == "A"
 
       # Frames in the gap (between 0 and 200ms) should have duplicated payload "A"
-      gap_frames = Enum.slice(output, 1, 4)  # Frames 1-4
+      # Frames 1-4
+      gap_frames = Enum.slice(output, 1, 4)
 
       Enum.each(gap_frames, fn buffer ->
         assert buffer.payload == "A", "Gap frame should have duplicated payload A"
@@ -189,13 +192,14 @@ defmodule Membrane.LiveFramerateConverter.StallPolicyTest do
 
       # Create input with intentional gap in time
       # Buffers at 0ms, 33ms, then gap, then more at 200ms, 233ms
-      input = create_buffers([
-        0,
-        period,
-        # Gap here
-        200_000_000,
-        200_000_000 + period
-      ])
+      input =
+        create_buffers([
+          0,
+          period,
+          # Gap here
+          200_000_000,
+          200_000_000 + period
+        ])
 
       # Run with realtimer to simulate realtime stall/resume
       output = run_converter_with_policy(input, {30, 1}, :halt, use_realtimer: true)
@@ -203,7 +207,8 @@ defmodule Membrane.LiveFramerateConverter.StallPolicyTest do
       # Should have some output from first burst, then some from second burst
       # No duplication in the gap
       assert length(output) >= 2
-      assert length(output) <= 10  # Not the full ~60 frames duplication would create
+      # Not the full ~60 frames duplication would create
+      assert length(output) <= 10
 
       # All output should be monotonically increasing
       output
@@ -215,13 +220,53 @@ defmodule Membrane.LiveFramerateConverter.StallPolicyTest do
   end
 
   describe "stall policy comparison" do
-    @tag :skip
-    test "policies behave differently only when stall occurs during active phase (not testable without realtimer delays)" do
-      # NOTE: This test is skipped because reproducing actual stall behavior
-      # (where timer ticks while waiting for more input) is difficult without
-      # realtimer and controlled delays. Both policies produce the same output
-      # when stream ends during loading phase before stall occurs.
-      :ok
+    test "duplicate produces more frames than halt during stall (with realtimer)" do
+      period = frame_period({30, 1})
+
+      # Create input with time gap that triggers stall
+      input =
+        create_buffers([
+          0,
+          period,
+          period * 2,
+          # Time gap here - will cause stall
+          200_000_000,
+          200_000_000 + period,
+          200_000_000 + period * 2
+        ])
+
+      # Run both policies with realtimer
+      output_duplicate =
+        run_converter_with_policy(input, {30, 1}, :duplicate,
+          queue_capacity: 3,
+          use_realtimer: true
+        )
+
+      output_halt =
+        run_converter_with_policy(input, {30, 1}, :halt,
+          queue_capacity: 3,
+          use_realtimer: true
+        )
+
+      # Duplicate should produce MORE frames (duplicates during stall)
+      # Halt should produce FEWER frames (halts during stall)
+      assert length(output_duplicate) > length(output_halt),
+             "Duplicate policy should produce more frames than halt during stall"
+
+      # Duplicate should have frames during the gap period
+      # Halt should stop outputting during the gap
+      duplicate_pts_during_gap =
+        Enum.count(output_duplicate, fn buf ->
+          buf.pts >= period * 3 and buf.pts < 200_000_000
+        end)
+
+      halt_pts_during_gap =
+        Enum.count(output_halt, fn buf ->
+          buf.pts >= period * 3 and buf.pts < 200_000_000
+        end)
+
+      assert duplicate_pts_during_gap > 0, "Duplicate policy should have frames during gap"
+      assert halt_pts_during_gap == 0, "Halt policy should have no frames during gap"
     end
 
     test "both policies output same frames when input is continuous" do
@@ -262,7 +307,8 @@ defmodule Membrane.LiveFramerateConverter.StallPolicyTest do
 
       # All output buffers should have nil DTS (normalized by Slot.set)
       Enum.each(output, fn buffer ->
-        assert buffer.dts == nil, "Buffer at PTS #{buffer.pts} has DTS #{buffer.dts}, expected nil"
+        assert buffer.dts == nil,
+               "Buffer at PTS #{buffer.pts} has DTS #{buffer.dts}, expected nil"
       end)
     end
   end
