@@ -8,8 +8,10 @@ defmodule Membrane.LiveFramerateConverter.MixProject do
       elixir: "~> 1.19",
       start_permanent: Mix.env() == :prod,
       source_url: "https://github.com/kim-company/membrane_live_framerate_converter_plugin",
+      homepage_url: "https://github.com/kim-company/membrane_live_framerate_converter_plugin",
       name: "Membrane Live Framerate Converter Plugin",
       description: description(),
+      docs: docs(),
       package: package(),
       deps: deps()
     ]
@@ -17,7 +19,17 @@ defmodule Membrane.LiveFramerateConverter.MixProject do
 
   defp description do
     """
+    A Membrane filter that stabilizes raw video output to a target framerate by
+    duplicating or dropping frames, with configurable stall handling.
     """
+  end
+
+  defp docs do
+    [
+      main: "readme",
+      extras: ["README.md"],
+      source_url: "https://github.com/kim-company/membrane_live_framerate_converter_plugin"
+    ]
   end
 
   defp package do

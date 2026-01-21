@@ -1,14 +1,24 @@
 defmodule Membrane.LiveFramerateConverter do
   @moduledoc """
-    Drops or duplicates buffers producing a stable output framerate, starts
-    when the first packet one is received.
+  A Membrane filter that stabilizes the output framerate for raw video by
+  dropping or duplicating buffers.
+
+  The element starts producing output once it has buffered enough input to
+  leave the loading phase. When input stalls during active playback it can
+  either duplicate the last frame to keep cadence or halt output until input
+  resumes, depending on `stall_policy`.
+
+  Notifications:
+  - `{:frame_dropped, pts, threshold}` when a buffer arrives too late
+  - `{:frame_duplicated, pts}` when a frame is duplicated
+  - `{:input_stalled, pts}` when input stalls after playback has started
+  - `{:input_resumed, pts}` when input resumes after a stall (duplicate policy)
   """
 
   use Membrane.Filter
   alias Membrane.RawVideo
   alias Membrane.Time
   alias Membrane.Buffer
-  require Membrane.Logger
 
   defmodule Slot do
     defstruct [:starts_at, :ends_at, :buffer]
@@ -106,7 +116,12 @@ defmodule Membrane.LiveFramerateConverter do
   end
 
   @impl true
-  def handle_stream_format(:input, %RawVideo{} = format, _context, %{framerate: framerate} = state) do
+  def handle_stream_format(
+        :input,
+        %RawVideo{} = format,
+        _context,
+        %{framerate: framerate} = state
+      ) do
     {[stream_format: {:output, %{format | framerate: framerate}}], state}
   end
 
@@ -179,7 +194,10 @@ defmodule Membrane.LiveFramerateConverter do
 
   defp handle_queue_empty(:duplicate, ctx, state) do
     # Send stall notification only on first stall detection
-    actions = if not state.stalled?, do: [notify_parent: {:input_stalled, state.current_slot.ends_at}], else: []
+    actions =
+      if not state.stalled?,
+        do: [notify_parent: {:input_stalled, state.current_slot.ends_at}],
+        else: []
 
     if state.last_buffer == nil do
       {actions, %{state | stalled?: true}}
@@ -209,7 +227,10 @@ defmodule Membrane.LiveFramerateConverter do
     # Will output when queue has data again
 
     # Send stall notification only on first stall detection
-    actions = if not state.stalled?, do: [notify_parent: {:input_stalled, state.current_slot.ends_at}], else: []
+    actions =
+      if not state.stalled?,
+        do: [notify_parent: {:input_stalled, state.current_slot.ends_at}],
+        else: []
 
     {actions, %{state | stalled?: true}}
   end
@@ -256,9 +277,9 @@ defmodule Membrane.LiveFramerateConverter do
         queue =
           if state.current_slot.buffer != nil and not state.current_slot_in_queue? do
             :queue.in(state.current_slot, state.queue)
-        else
-          state.queue
-        end
+          else
+            state.queue
+          end
 
         current_slot =
           if state.stall_policy == :duplicate and state.loading? and
@@ -279,7 +300,8 @@ defmodule Membrane.LiveFramerateConverter do
   defp enqueue_current_slot(state) do
     if state.current_slot != nil and state.current_slot.buffer != nil and
          not state.current_slot_in_queue? do
-      {[], %{state | queue: :queue.in(state.current_slot, state.queue), current_slot_in_queue?: true}}
+      {[],
+       %{state | queue: :queue.in(state.current_slot, state.queue), current_slot_in_queue?: true}}
     else
       {[], state}
     end
