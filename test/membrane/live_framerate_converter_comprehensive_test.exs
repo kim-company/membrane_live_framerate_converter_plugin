@@ -230,9 +230,9 @@ defmodule Membrane.LiveFramerateConverterComprehensiveTest do
 
       output = run_converter(input, {30, 1})
 
-      # Single buffer stays in current_slot and is never pushed to queue
-      # So no output is produced (current_slot is not output on EOS)
-      assert output == []
+      # Single buffer is flushed to queue on EOS and output by the timer.
+      assert length(output) == 1
+      assert hd(output).pts == 0
     end
 
     test "two buffers very close together" do
@@ -242,23 +242,22 @@ defmodule Membrane.LiveFramerateConverterComprehensiveTest do
 
       output = run_converter(input, {30, 1})
 
-      # Both buffers fit in same slot (current_slot), never pushed to queue
-      # So no output is produced
-      assert output == []
+      # Both buffers land in the same slot [0, 33ms). The slot is flushed
+      # on EOS and output once.
+      assert length(output) == 1
+      assert hd(output).pts == 0
     end
 
-    test "stream ending during loading phase" do
-      # Only 3 buffers with default queue_capacity of 200
+    test "stream ending with few buffers" do
+      # Only 3 buffers at exact slot boundaries
       input = create_buffers([0, 33_333_333, 66_666_666])
 
       output = run_converter(input, {30, 1})
 
-      # Buffers at exact slot boundaries with half-open intervals [start, end)
-      # Slot 0: [0, 33_333_333) - gets buffer at 0, then buffer at 33_333_333 triggers next slot
-      # Slot 1: [33_333_333, 66_666_666) - gets buffer at 33_333_333, then buffer at 66_666_666 triggers next slot
-      # Slot 2: [66_666_666, 99_999_999) - gets buffer at 66_666_666
-      # Slots 0 and 1 are pushed to queue, slot 2 remains in current_slot
-      assert length(output) == 2
+      # Slot 0: [0, 33_333_333) — buffer at 0
+      # Slot 1: [33_333_333, 66_666_666) — buffer at 33_333_333
+      # Slot 2: [66_666_666, 99_999_999) — buffer at 66_666_666 (flushed on EOS)
+      assert length(output) == 3
     end
 
     test "exact slot boundary alignment" do

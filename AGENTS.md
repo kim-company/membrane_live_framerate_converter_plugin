@@ -15,10 +15,10 @@ mix deps.get
 mix test
 
 # Run a specific test file
-mix test test/membrane/live_framerate_converter_test.exs
+mix test test/membrane/live_framerate_converter_comprehensive_test.exs
 
 # Run a specific test
-mix test test/membrane/live_framerate_converter_test.exs:9
+mix test test/membrane/live_framerate_converter_comprehensive_test.exs:9
 ```
 
 ### Code Formatting
@@ -41,11 +41,11 @@ mix compile
 
 The plugin implements a Membrane Filter element with these key characteristics:
 
-- **Mode**: Manual flow control input (demand-based) → Push flow control output
+- **Mode**: Auto flow control input → Auto flow control output
 - **Format**: Accepts and produces aligned RawVideo frames
-- **Buffering Strategy**: Uses a configurable queue (default 200 buffers) for startup buffering
-- **Pad Definitions**: Uses `flow_control: :manual` for input (with `demand_unit: :buffers`) and `flow_control: :push` for output (compatible with membrane_core >= 0.11)
+- **Pad Definitions**: Uses `flow_control: :auto` for both input and output
 - **Stall Policy**: Configurable behavior when input stops providing data (`:duplicate` or `:halt`)
+- **No Loading Phase**: Timer starts on first buffer arrival — zero startup latency
 
 ### Frame Processing Algorithm
 
@@ -58,36 +58,33 @@ The converter uses a "slot-based" time window system:
    - Uses half-open interval `[starts_at, ends_at)` to avoid boundary overlaps
 
 2. **Processing Flow**:
-   - **Loading Phase**: Fills queue to `queue_capacity` before starting timer
-   - **Active Phase**: Timer ticks at target framerate period, emitting one buffer per tick
+   - Timer starts on first buffer arrival, ticks at target framerate period
    - **Frame Mapping**: Input buffers with `starts_at <= PTS < ends_at` are assigned to that slot
-   - **Frame Dropping**: Late buffers (PTS < slot start) are logged and dropped
-   - **Frame Duplication**: Empty queue triggers buffer duplication with warning
+   - **Frame Dropping**: Late buffers (PTS < slot start) are dropped with notification
+   - **Frame Duplication**: For `:duplicate` policy, intermediate empty slots are always
+     filled by carrying the last known buffer forward — this prevents PTS gaps in the output
+   - **Current Slot Flush**: On timer tick, if the queue is empty but `current_slot` has a
+     buffer, it is flushed into the queue and output. This handles the case where input
+     arrives between ticks without a subsequent buffer to trigger `advance_slot_and_retry`.
 
 3. **State Management**:
-   - `current_slot`: The current time window being filled
-   - `queue`: Buffered slots ready for output (uses Erlang's `:queue` module)
-   - `loading?`: Flag indicating startup buffering phase
+   - `current_slot`: The current time window being filled by input
+   - `queue`: Finalised slots ready for output (uses Erlang's `:queue` module)
    - `stalled?`: Whether the element is in stall mode (queue drained during active phase)
-   - `pts_offset`: Accumulated offset applied to input PTS after stall recovery (see below)
+   - `pts_offset`: Offset applied to input PTS after stall recovery
    - `last_buffer`: Most recent buffer payload, used for duplication during stalls
+   - `timer_started?`: Whether the output timer has been started
 
 ### Key Dependencies
 
-- `membrane_core` (>= 0.11.0): Core Membrane framework
-- `membrane_raw_video_format`: Raw video format definitions
+- `membrane_core` (~> 1.2): Core Membrane framework
+- `membrane_raw_video_format` (~> 0.2): Raw video format definitions
 - `:queue`: Erlang's built-in queue module (used for slot buffering)
 - `membrane_realtimer_plugin` (test only): Provides realtime processing for tests
 
 ### Testing
 
 The test suite includes:
-
-**Fixture-based tests** (`test/fixtures/`):
-- `low.jsonl`: Input with missing frames (< target framerate)
-- `high.jsonl`: Input with excess frames (> target framerate)
-- `variable.jsonl`: Input with inconsistent framerate
-- `sparse.jsonl`: Input with very sparse frames
 
 **Unit tests** (`slot_test.exs`):
 - Tests for `Slot` module functions (new, next, accepts?, old?, set)
@@ -118,9 +115,27 @@ The test suite includes:
 - Integer arithmetic is used for all time calculations (addition, subtraction, comparison)
 - Buffers are normalized to slot start time: `%{buffer | pts: slot.starts_at, dts: nil}`
 
-### Demand Management
-- Element maintains preferred queue size by issuing demands: `queue_capacity - current_queue_size`
-- Demands are only issued when queue has available space
+### Slot Enqueueing Strategy
+
+Slots are enqueued only when they are **finalised** — i.e. when a later input buffer
+triggers `advance_slot_and_retry`, or when end-of-stream arrives. The `current_slot`
+is never enqueued while it is still the active target for incoming buffers. This avoids
+stale-queue issues where the queue holds an outdated copy of a slot that was later
+overwritten by a newer input buffer.
+
+When the timer ticks and the queue is empty, it checks `current_slot` as a fallback:
+if `current_slot` has a buffer, it is flushed into the queue and immediately consumed.
+
+### Intermediate Slot Filling (PTS Gap Prevention)
+
+In `advance_slot_and_retry`, for the `:duplicate` policy, every intermediate slot
+between the current position and the target slot is filled with a duplicate of the
+last known buffer. This ensures the output PTS is always evenly spaced at the target
+period — no gaps, regardless of input timing.
+
+The carry-forward uses two branches:
+- If `current_slot.buffer` is non-nil: `Slot.next` (carries the slot's own buffer)
+- If `current_slot.buffer` is nil but `last_buffer` exists: `Slot.next_empty |> Slot.set(last_buffer)`
 
 ### Stall Policies
 
@@ -129,7 +144,7 @@ When input stops providing data (queue becomes empty during timer ticks), two po
 #### `:duplicate` Policy (Default)
 - **Behavior**: Duplicates the last received frame to maintain constant output framerate
 - **Use Case**: Live streaming where consistent framerate is critical
-- **Implementation**: When queue is empty, creates duplicate of last buffer with next slot's PTS
+- **Implementation**: When queue is empty, outputs duplicate of last buffer at next slot's PTS
 - **Effect**: Output continues at target framerate even if input stalls
 
 #### `:halt` Policy
@@ -147,9 +162,9 @@ source PTS is behind the output timeline (the stall created a gap between them).
 Recovery is handled in `push_buffer` and fires unconditionally when `stalled? == true`
 and a buffer arrives:
 
-1. The buffer is placed in the **next output slot** (`current_slot.ends_at`), so fresh
-   content appears immediately — one period after the last duplicated frame.
-2. A `pts_offset` is computed: `next_slot_start − source_pts`. This maps the source's
+1. The buffer is placed in a recovery slot at `current_slot.ends_at` and stored as
+   `current_slot` (not enqueued). The next timer tick flushes it via the fallback path.
+2. A `pts_offset` is computed: `recovery_slot_start − source_pts`. This maps the source's
    PTS timeline onto the output timeline.
 3. The stale queue is flushed, `stalled?` is cleared, and `{:input_resumed, source_pts}`
    is sent to the parent.
@@ -202,11 +217,12 @@ The converter sends notifications to the parent process for important events:
 - **Note**: Sent for each duplication while stalled
 
 ### Edge Cases
-- **End of Stream**: Pushes `:end_of_stream` marker into queue, processed in timer tick
+- **End of Stream**: Flushes current_slot, pushes `:end_of_stream` marker into queue
 - **Empty Queue with `:duplicate`**: Duplicates last buffer with PTS at next slot boundary
 - **Empty Queue with `:halt`**: No output produced, timer keeps running
-- **Late Buffers**: Logged with warning and dropped
+- **Late Buffers**: Dropped with `{:frame_dropped, pts, threshold}` notification
 - **Boundary Buffers**: Half-open intervals prevent ambiguity at slot boundaries
 - **Stall Recovery**: First post-stall buffer bypasses slot matching entirely, placed in next output slot
 - **Negative `pts_offset`**: Occurs when fewer duplications happen than expected (source slightly ahead); works correctly because output PTS is always derived from the slot, not the source
 - **Multiple Stalls**: Each recovery recomputes `pts_offset` from scratch; offsets do not accumulate
+- **Empty Input**: If no buffers arrive before EOS, `end_of_stream` is forwarded directly without starting the timer
