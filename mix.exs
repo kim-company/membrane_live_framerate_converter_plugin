@@ -56,7 +56,8 @@ defmodule Membrane.LiveFramerateConverter.MixProject do
       {:membrane_core, "~> 1.2"},
       {:membrane_raw_video_format, "~> 0.2"},
       {:membrane_realtimer_plugin, "~> 0.10", only: :test},
-      {:ex_doc, ">= 0.0.0", only: :dev, runtime: false}
+      {:ex_doc, ">= 0.0.0", only: :dev, runtime: false},
+      {:credo, "~> 1.7", only: [:dev, :test], runtime: false}
     ]
   end
 end

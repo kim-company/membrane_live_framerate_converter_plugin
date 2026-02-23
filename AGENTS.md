@@ -1,7 +1,3 @@
-# CLAUDE.md
-
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
 ## Project Overview
 
 This is a Membrane Framework plugin that converts variable input framerates to stable output framerates for realtime applications. It works by dropping or duplicating frames to maintain a consistent target framerate, making it suitable for live video processing scenarios.
@@ -72,6 +68,9 @@ The converter uses a "slot-based" time window system:
    - `current_slot`: The current time window being filled
    - `queue`: Buffered slots ready for output (uses Erlang's `:queue` module)
    - `loading?`: Flag indicating startup buffering phase
+   - `stalled?`: Whether the element is in stall mode (queue drained during active phase)
+   - `pts_offset`: Accumulated offset applied to input PTS after stall recovery (see below)
+   - `last_buffer`: Most recent buffer payload, used for duplication during stalls
 
 ### Key Dependencies
 
@@ -103,9 +102,12 @@ The test suite includes:
 - Tests for `:duplicate` and `:halt` policies
 - Late buffer handling after duplication
 - Timing verification for duplicated frames
+- Stall recovery: single stall with PTS continuity verification
+- Stall recovery: multiple stalls with payload presence from all bursts
 
 **Notification tests** (`notifications_test.exs`):
 - Tests for parent notifications (frame_dropped, input_stalled, input_resumed, frame_duplicated)
+- Stall recovery notification: verifies `input_resumed` carries the original source PTS
 - Note: Stall/resume/duplication notifications require realtimer for realistic testing
 
 ## Implementation Notes
@@ -136,6 +138,36 @@ When input stops providing data (queue becomes empty during timer ticks), two po
 - **Implementation**: When queue is empty, timer continues but no output is produced
 - **Effect**: Output pauses during input stalls, resumes when input arrives
 
+### Stall Recovery (`:duplicate` policy)
+
+The output timeline is the authority — it ticks at the target framerate regardless of input.
+During a stall, duplication keeps the output cadence constant. When input resumes, the
+source PTS is behind the output timeline (the stall created a gap between them).
+
+Recovery is handled in `push_buffer` and fires unconditionally when `stalled? == true`
+and a buffer arrives:
+
+1. The buffer is placed in the **next output slot** (`current_slot.ends_at`), so fresh
+   content appears immediately — one period after the last duplicated frame.
+2. A `pts_offset` is computed: `next_slot_start − source_pts`. This maps the source's
+   PTS timeline onto the output timeline.
+3. The stale queue is flushed, `stalled?` is cleared, and `{:input_resumed, source_pts}`
+   is sent to the parent.
+4. All subsequent input buffers have `pts_offset` added to their PTS before slot matching,
+   so they land in the correct output slots.
+
+**Why recovery is at the top of `push_buffer`:** during a stall the output slot timeline
+advances via duplication while source PTS stays where it was. When input resumes, the
+source buffer's PTS could land anywhere relative to `current_slot` depending on timing:
+behind it (old), inside it (accepted), or ahead of it (future). Checking for stall recovery
+before any slot matching handles all three cases uniformly, producing gapless output with
+exact period spacing.
+
+Multiple stalls simply recompute the offset each time. The offset can be positive (source
+behind output, common case) or negative (source slightly ahead due to fewer duplications
+than expected). Both work correctly because `Slot.set` normalizes the output PTS to the
+slot boundary.
+
 ### Parent Notifications
 
 The converter sends notifications to the parent process for important events:
@@ -155,11 +187,12 @@ The converter sends notifications to the parent process for important events:
 - **Note**: Sent once when stall is first detected, not repeatedly
 
 #### `{:input_resumed, pts}`
-- **When**: Buffer arrives after a stall (queue refills)
+- **When**: First buffer arrives after a `:duplicate`-policy stall, triggering recovery
 - **Parameters**:
-  - `pts`: The timestamp of the buffer that resumed the stream
+  - `pts`: The **original source PTS** of the buffer that triggered recovery (before offset)
 - **Use Case**: Track input recovery after stall
-- **Note**: Only sent if previously stalled
+- **Note**: Only sent for `:duplicate` policy. The `pts` value reflects the source timeline,
+  not the output timeline — useful for correlating with the input stream
 
 #### `{:frame_duplicated, pts}`
 - **When**: Frame is duplicated due to stall (`:duplicate` policy only)
@@ -174,3 +207,6 @@ The converter sends notifications to the parent process for important events:
 - **Empty Queue with `:halt`**: No output produced, timer keeps running
 - **Late Buffers**: Logged with warning and dropped
 - **Boundary Buffers**: Half-open intervals prevent ambiguity at slot boundaries
+- **Stall Recovery**: First post-stall buffer bypasses slot matching entirely, placed in next output slot
+- **Negative `pts_offset`**: Occurs when fewer duplications happen than expected (source slightly ahead); works correctly because output PTS is always derived from the slot, not the source
+- **Multiple Stalls**: Each recovery recomputes `pts_offset` from scratch; offsets do not accumulate

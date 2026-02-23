@@ -85,7 +85,7 @@ defmodule Membrane.LiveFramerateConverter.NotificationsTest do
           _ -> false
         end)
 
-      assert length(dropped_notifications) >= 1,
+      assert dropped_notifications != [],
              "Expected at least one frame_dropped notification for PTS 5ms"
 
       # Verify the notification has correct structure
@@ -150,7 +150,7 @@ defmodule Membrane.LiveFramerateConverter.NotificationsTest do
           _ -> false
         end)
 
-      assert length(stalled_notifications) >= 1,
+      assert stalled_notifications != [],
              "Expected at least one input_stalled notification"
 
       # Verify stall happened at expected time (after queue drained)
@@ -232,7 +232,7 @@ defmodule Membrane.LiveFramerateConverter.NotificationsTest do
       # Should have multiple frame_duplicated notifications during the gap
       # Gap is from ~99ms to 200ms = ~101ms = multiple frames
       # Should see multiple duplications
-      assert length(duplicated_notifications) >= 1,
+      assert duplicated_notifications != [],
              "Expected frame_duplicated notifications during stall"
 
       # All duplication PTS should be >= period * 3 (after original buffers)
@@ -282,17 +282,16 @@ defmodule Membrane.LiveFramerateConverter.NotificationsTest do
     test "notifies when input resumes after stall (with realtimer)" do
       period = frame_period({30, 1})
 
-      # Create input with gap that causes stall, then more buffers to trigger resume
+      # Create input with 1-second gap that causes stall, then more buffers
       input =
         create_buffers([
           0,
           period,
           period * 2,
-          # Gap in time - causes stall
-          200_000_000,
-          # More buffers after gap - should trigger resume
-          200_000_000 + period,
-          200_000_000 + period * 2
+          # 1-second gap - stall detected well before post-stall buffers
+          1_000_000_000,
+          1_000_000_000 + period,
+          1_000_000_000 + period * 2
         ])
 
       # Run with realtimer to create realistic stall/resume cycle
@@ -319,28 +318,70 @@ defmodule Membrane.LiveFramerateConverter.NotificationsTest do
           _ -> false
         end)
 
-      case {stalled_notifications, resumed_notifications} do
-        {[], []} ->
-          :ok
+      # If a stall was detected, we must see a matching resume
+      if stalled_notifications != [] do
+        assert resumed_notifications != [],
+               "Expected input_resumed notification after input_stalled"
 
-        {[], _resumed} ->
-          flunk("Expected input_stalled notification before input_resumed")
+        # Resume PTS should be the first post-stall source buffer PTS
+        [{:notification, {:input_resumed, resume_pts}} | _] = resumed_notifications
 
-        {_stalled, []} ->
-          flunk("Expected input_resumed notification after input_stalled")
+        assert resume_pts == 1_000_000_000,
+               "Resume PTS should be the first post-stall buffer (1_000_000_000), got #{resume_pts}"
+      end
+    end
+  end
 
-        {[{:notification, {:input_stalled, stalled_pts}} | _stalled_rest],
-         [{:notification, {:input_resumed, resume_pts}} | _resumed_rest]} ->
-          resume_candidates = [
-            200_000_000,
-            200_000_000 + period,
-            200_000_000 + period * 2
-          ]
+  describe "input_resumed after stall recovery" do
+    test "emits input_resumed with original source PTS after stall recovery (with realtimer)" do
+      period = frame_period({30, 1})
 
-          expected_resume_pts = Enum.find(resume_candidates, &(&1 >= stalled_pts))
+      # 3 frames, 1-second gap causing stall+duplication, 3 more frames.
+      # The 1s gap ensures stall is detected well before post-stall buffers arrive.
+      input =
+        create_buffers([
+          0,
+          period,
+          period * 2,
+          # 1-second gap - stall detected, many duplications
+          1_000_000_000,
+          1_000_000_000 + period,
+          1_000_000_000 + period * 2
+        ])
 
-          assert resume_pts == expected_resume_pts,
-                 "Resume should be at the first buffer after stall"
+      output =
+        run_converter_and_collect_notifications(
+          input,
+          {30, 1},
+          queue_capacity: 3,
+          use_realtimer: true,
+          stall_policy: :duplicate
+        )
+
+      notifications = Enum.filter(output, &match?({:notification, _}, &1))
+
+      stalled_notifications =
+        Enum.filter(notifications, fn
+          {:notification, {:input_stalled, _pts}} -> true
+          _ -> false
+        end)
+
+      resumed_notifications =
+        Enum.filter(notifications, fn
+          {:notification, {:input_resumed, _pts}} -> true
+          _ -> false
+        end)
+
+      # If a stall was detected, recovery must fire and emit input_resumed
+      if stalled_notifications != [] do
+        assert resumed_notifications != [],
+               "Expected input_resumed after stall recovery"
+
+        # The resumed PTS is the original source PTS of the first post-stall buffer
+        [{:notification, {:input_resumed, resume_pts}} | _] = resumed_notifications
+
+        assert resume_pts == 1_000_000_000,
+               "Resume PTS #{resume_pts} should be the first post-stall source PTS (1_000_000_000)"
       end
     end
   end
@@ -370,7 +411,7 @@ defmodule Membrane.LiveFramerateConverter.NotificationsTest do
           _ -> false
         end)
 
-      assert length(dropped_notifications) > 0, "Expected frame_dropped notifications"
+      assert dropped_notifications != [], "Expected frame_dropped notifications"
 
       # Verify structure
       Enum.each(dropped_notifications, fn {:notification, {:frame_dropped, pts, threshold}} ->

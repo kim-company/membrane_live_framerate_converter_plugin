@@ -108,7 +108,7 @@ defmodule Membrane.LiveFramerateConverterComprehensiveTest do
       # Timer starts on EOS during loading, producing output for all queued slots
       # Plus duplication fills gaps until EOS marker is reached
       # Actual behavior: produces frames for time span covered by input
-      assert length(output) >= 3
+      assert Enum.count(output) >= 3
       assert hd(output).pts == 0
       assert_monotonic(output)
     end
@@ -190,12 +190,12 @@ defmodule Membrane.LiveFramerateConverterComprehensiveTest do
     end
 
     test "fractional framerate 29.97fps (NTSC)" do
-      # 30000/1001 = 29.97fps
+      # 30_000/1001 = 29.97fps
       input = create_even_buffers(0, 30, 10_000_000)
 
-      output = run_converter(input, {30000, 1001})
+      output = run_converter(input, {30_000, 1001})
 
-      period = frame_period({30000, 1001})
+      period = frame_period({30_000, 1001})
       assert_even_spacing(output, period)
     end
 
@@ -232,7 +232,7 @@ defmodule Membrane.LiveFramerateConverterComprehensiveTest do
 
       # Single buffer stays in current_slot and is never pushed to queue
       # So no output is produced (current_slot is not output on EOS)
-      assert length(output) == 0
+      assert output == []
     end
 
     test "two buffers very close together" do
@@ -244,7 +244,7 @@ defmodule Membrane.LiveFramerateConverterComprehensiveTest do
 
       # Both buffers fit in same slot (current_slot), never pushed to queue
       # So no output is produced
-      assert length(output) == 0
+      assert output == []
     end
 
     test "stream ending during loading phase" do
@@ -271,7 +271,7 @@ defmodule Membrane.LiveFramerateConverterComprehensiveTest do
       # With few input buffers, stream ends during loading phase
       # Timer starts and fills with duplication as needed
       # Each boundary buffer creates a valid output frame
-      assert length(output) >= 3
+      assert Enum.count(output) >= 3
       assert hd(output).pts == 0
       # All output PTS should be multiples of period
       Enum.each(output, fn buf ->
@@ -314,7 +314,7 @@ defmodule Membrane.LiveFramerateConverterComprehensiveTest do
       # Slot 0 gets pushed when buffer beyond it arrives
       # Should have at least 1 output (slot 0 with buffer from 33.333ms)
       # PTS normalized to slot start (0)
-      assert length(output) >= 1
+      assert output != []
       assert hd(output).pts == 0
     end
   end
@@ -412,7 +412,7 @@ defmodule Membrane.LiveFramerateConverterComprehensiveTest do
       output = run_converter(input, {30, 1}, queue_capacity: 1)
 
       # Should still produce output
-      assert length(output) > 0
+      assert output != []
       assert_monotonic(output)
     end
 
@@ -450,7 +450,7 @@ defmodule Membrane.LiveFramerateConverterComprehensiveTest do
       # ~1 second of input
       input = create_even_buffers(0, 100, 10_000_000)
 
-      output = run_converter(input, {30000, 1001})
+      output = run_converter(input, {30_000, 1001})
 
       # ~1 second at 29.97fps ≈ 30 frames
       assert length(output) in 29..31

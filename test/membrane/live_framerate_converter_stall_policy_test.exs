@@ -184,7 +184,7 @@ defmodule Membrane.LiveFramerateConverter.StallPolicyTest do
       output = run_converter_with_policy(input, {30, 1}, :halt, queue_capacity: 5)
 
       # Should produce some output without crashing
-      assert length(output) >= 0
+      assert is_list(output)
     end
 
     test "halt policy resumes output when input resumes (with realtimer)" do
@@ -280,6 +280,96 @@ defmodule Membrane.LiveFramerateConverter.StallPolicyTest do
       # Both should produce similar output when input is continuous
       # May differ by 1-2 due to current_slot not being output
       assert abs(length(output_duplicate) - length(output_halt)) <= 2
+    end
+  end
+
+  describe "duplicate stall recovery" do
+    test "duplicate policy recovers from stall with PTS continuity (with realtimer)" do
+      period = frame_period({30, 1})
+
+      # 3 frames at 30fps, 1-second gap via realtimer, 3 more frames.
+      # Recovery fires deterministically: when stalled + duplicate policy,
+      # the first arriving buffer is placed in the next output slot regardless
+      # of its source PTS. Output must be gapless.
+      pre_stall = [0, period, period * 2]
+      post_stall = [1_000_000_000, 1_000_000_000 + period, 1_000_000_000 + period * 2]
+
+      input =
+        Enum.map(pre_stall ++ post_stall, fn pts ->
+          %Buffer{pts: pts, dts: pts, payload: <<"frame_#{pts}">>, metadata: %{}}
+        end)
+
+      output =
+        run_converter_with_policy(input, {30, 1}, :duplicate,
+          queue_capacity: 3,
+          use_realtimer: true
+        )
+
+      # Output PTS must be strictly monotonically increasing
+      output
+      |> Enum.chunk_every(2, 1, :discard)
+      |> Enum.each(fn [b1, b2] ->
+        assert b2.pts > b1.pts, "PTS not strictly monotonic: #{b1.pts} -> #{b2.pts}"
+      end)
+
+      # Output PTS must be evenly spaced at target period (no gaps, no jitter)
+      output
+      |> Enum.chunk_every(2, 1, :discard)
+      |> Enum.each(fn [b1, b2] ->
+        diff = b2.pts - b1.pts
+
+        assert diff == period,
+               "PTS gap #{diff} != expected period #{period} (#{b1.pts} -> #{b2.pts})"
+      end)
+
+      # Post-stall payloads MUST appear in output (not infinite duplication)
+      post_stall_payloads = Enum.map(post_stall, fn pts -> <<"frame_#{pts}">> end)
+      output_payloads = Enum.map(output, & &1.payload) |> MapSet.new()
+
+      Enum.each(post_stall_payloads, fn payload ->
+        assert MapSet.member?(output_payloads, payload),
+               "Post-stall payload #{inspect(payload)} missing from output"
+      end)
+    end
+
+    test "duplicate policy recovers from multiple stalls (with realtimer)" do
+      period = frame_period({30, 1})
+
+      # 3 bursts of 3 frames with 1-second gaps between them.
+      burst1 = [0, period, period * 2]
+      burst2 = [1_000_000_000, 1_000_000_000 + period, 1_000_000_000 + period * 2]
+      burst3 = [2_000_000_000, 2_000_000_000 + period, 2_000_000_000 + period * 2]
+
+      input =
+        Enum.map(burst1 ++ burst2 ++ burst3, fn pts ->
+          %Buffer{pts: pts, dts: pts, payload: <<"burst_#{pts}">>, metadata: %{}}
+        end)
+
+      output =
+        run_converter_with_policy(input, {30, 1}, :duplicate,
+          queue_capacity: 3,
+          use_realtimer: true
+        )
+
+      # PTS strictly monotonic and evenly spaced throughout
+      output
+      |> Enum.chunk_every(2, 1, :discard)
+      |> Enum.each(fn [b1, b2] ->
+        diff = b2.pts - b1.pts
+
+        assert diff == period,
+               "PTS gap #{diff} != expected #{period} (#{b1.pts} -> #{b2.pts})"
+      end)
+
+      # Payloads from ALL three bursts must appear in output
+      all_pts = burst1 ++ burst2 ++ burst3
+      all_payloads = Enum.map(all_pts, fn pts -> <<"burst_#{pts}">> end)
+      output_payloads = Enum.map(output, & &1.payload) |> MapSet.new()
+
+      Enum.each(all_payloads, fn payload ->
+        assert MapSet.member?(output_payloads, payload),
+               "Payload #{inspect(payload)} from burst missing in output"
+      end)
     end
   end
 

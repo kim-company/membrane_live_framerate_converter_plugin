@@ -4,15 +4,51 @@ defmodule Membrane.LiveFramerateConverter do
   dropping or duplicating buffers.
 
   The element starts producing output once it has buffered enough input to
-  leave the loading phase. When input stalls during active playback it can
-  either duplicate the last frame to keep cadence or halt output until input
-  resumes, depending on `stall_policy`.
+  leave the loading phase (`queue_capacity` buffers). After that a timer ticks
+  at the target framerate, emitting one buffer per tick.
 
-  Notifications:
-  - `{:frame_dropped, pts, threshold}` when a buffer arrives too late
-  - `{:frame_duplicated, pts}` when a frame is duplicated
-  - `{:input_stalled, pts}` when input stalls after playback has started
-  - `{:input_resumed, pts}` when input resumes after a stall (duplicate policy)
+  ## Slot-based frame matching
+
+  The output timeline is divided into consecutive *slots*, each one period
+  wide (`[starts_at, ends_at)`). Every input buffer is matched to the slot
+  whose time window contains the buffer's PTS. When multiple input buffers
+  fall in the same slot the last one wins (higher input framerate → frames
+  are dropped). When no input buffer falls in a slot the previous frame is
+  carried forward (lower input framerate → frames are duplicated).
+
+  ## Stall handling (`:duplicate` policy)
+
+  When no input arrives for an extended time the queue drains and the element
+  enters *stall* mode. In this mode each timer tick duplicates the last
+  received frame into the next output slot, keeping the output cadence
+  constant. The output timeline keeps advancing.
+
+  When input resumes, the first arriving buffer is placed directly into the
+  **next available output slot** — regardless of the buffer's source PTS.
+  This means fresh content appears in the output as soon as possible, with
+  no accumulated delay from the stall period.
+
+  Because the source PTS timeline is now behind the output timeline, a
+  `pts_offset` is computed (`output_slot_start − source_pts`) and applied to
+  all subsequent input buffers before slot matching. This keeps the two
+  timelines aligned going forward. Multiple stalls simply recompute the
+  offset each time.
+
+  The result is a **gapless, strictly monotonic** output at exactly the
+  target period throughout normal operation, stalls, and recoveries.
+
+  ## Stall handling (`:halt` policy)
+
+  Output stops while the queue is empty. When input resumes, buffers go
+  through normal slot matching and output picks up where it left off.
+
+  ## Notifications
+
+  - `{:frame_dropped, pts, threshold}` — a late buffer arrived (PTS < current slot start)
+  - `{:frame_duplicated, pts}` — a frame was duplicated to fill a stall gap
+  - `{:input_stalled, pts}` — queue became empty during active playback (sent once per stall)
+  - `{:input_resumed, pts}` — first buffer after a `:duplicate`-policy stall; `pts` is the
+    original source PTS of the buffer that triggered recovery
   """
 
   use Membrane.Filter
@@ -21,6 +57,7 @@ defmodule Membrane.LiveFramerateConverter do
   alias Membrane.Buffer
 
   defmodule Slot do
+    @moduledoc false
     defstruct [:starts_at, :ends_at, :buffer]
 
     def new(starts_at, duration) do
@@ -30,7 +67,7 @@ defmodule Membrane.LiveFramerateConverter do
       }
     end
 
-    def next(prev = %__MODULE__{}) do
+    def next(%__MODULE__{} = prev) do
       %__MODULE__{
         starts_at: prev.ends_at,
         ends_at: prev.ends_at + (prev.ends_at - prev.starts_at)
@@ -38,7 +75,7 @@ defmodule Membrane.LiveFramerateConverter do
       |> set(prev.buffer)
     end
 
-    def next_empty(prev = %__MODULE__{}) do
+    def next_empty(%__MODULE__{} = prev) do
       %__MODULE__{
         starts_at: prev.ends_at,
         ends_at: prev.ends_at + (prev.ends_at - prev.starts_at),
@@ -106,7 +143,8 @@ defmodule Membrane.LiveFramerateConverter do
        current_slot_in_queue?: false,
        last_buffer: nil,
        stall_policy: opts.stall_policy,
-       stalled?: false
+       stalled?: false,
+       pts_offset: 0
      }}
   end
 
@@ -126,7 +164,7 @@ defmodule Membrane.LiveFramerateConverter do
   end
 
   @impl true
-  def handle_buffer(:input, buffer, _ctx, state = %{loading?: true}) do
+  def handle_buffer(:input, buffer, _ctx, %{loading?: true} = state) do
     state =
       if state.current_slot == nil do
         %{state | current_slot: Slot.new(buffer.pts, state.period)}
@@ -157,14 +195,7 @@ defmodule Membrane.LiveFramerateConverter do
   end
 
   def handle_buffer(:input, buffer, _ctx, state) do
-    resume? = state.stalled? and not Slot.old?(state.current_slot, buffer)
-    {actions, state} = push_buffer(state, buffer)
-
-    if resume? and state.stall_policy == :duplicate do
-      {[notify_parent: {:input_resumed, buffer.pts}] ++ actions, %{state | stalled?: false}}
-    else
-      {actions, state}
-    end
+    push_buffer(state, buffer)
   end
 
   @impl true
@@ -195,9 +226,9 @@ defmodule Membrane.LiveFramerateConverter do
   defp handle_queue_empty(:duplicate, ctx, state) do
     # Send stall notification only on first stall detection
     actions =
-      if not state.stalled?,
-        do: [notify_parent: {:input_stalled, state.current_slot.ends_at}],
-        else: []
+      if state.stalled?,
+        do: [],
+        else: [notify_parent: {:input_stalled, state.current_slot.ends_at}]
 
     if state.last_buffer == nil do
       {actions, %{state | stalled?: true}}
@@ -228,9 +259,9 @@ defmodule Membrane.LiveFramerateConverter do
 
     # Send stall notification only on first stall detection
     actions =
-      if not state.stalled?,
-        do: [notify_parent: {:input_stalled, state.current_slot.ends_at}],
-        else: []
+      if state.stalled?,
+        do: [],
+        else: [notify_parent: {:input_stalled, state.current_slot.ends_at}]
 
     {actions, %{state | stalled?: true}}
   end
@@ -251,49 +282,97 @@ defmodule Membrane.LiveFramerateConverter do
   end
 
   defp push_buffer(state, buffer) do
-    if Slot.accepts?(state.current_slot, buffer) do
-      slot =
-        if state.stall_policy == :halt do
-          %{state.current_slot | buffer: %{buffer | dts: nil}}
-        else
-          Slot.set(state.current_slot, buffer)
-        end
+    if state.stalled? and state.stall_policy == :duplicate do
+      # Stall recovery: the output timeline has been advancing via duplication
+      # while input was stalled. Don't try to slot-match this buffer — just
+      # place it in the next output slot so it appears immediately, then
+      # compute an offset so subsequent input buffers map correctly onto the
+      # output timeline.
+      new_offset = state.current_slot.ends_at - buffer.pts
 
-      state = %{state | current_slot: slot, last_buffer: slot.buffer}
+      new_slot =
+        Slot.new(state.current_slot.ends_at, state.period)
+        |> Slot.set(buffer)
+
+      state = %{
+        state
+        | current_slot: new_slot,
+          current_slot_in_queue?: false,
+          pts_offset: new_offset,
+          stalled?: false,
+          last_buffer: new_slot.buffer,
+          queue: :queue.new()
+      }
 
       state =
-        if not state.loading? and not state.current_slot_in_queue? do
-          %{state | queue: :queue.in(slot, state.queue), current_slot_in_queue?: true}
-        else
+        if state.loading? do
           state
+        else
+          %{state | queue: :queue.in(new_slot, state.queue), current_slot_in_queue?: true}
         end
 
-      {[], state}
+      {[notify_parent: {:input_resumed, buffer.pts}], state}
     else
-      if Slot.old?(state.current_slot, buffer) do
+      buffer = %{buffer | pts: buffer.pts + state.pts_offset}
+      do_push_buffer(state, buffer)
+    end
+  end
+
+  defp do_push_buffer(state, buffer) do
+    cond do
+      Slot.accepts?(state.current_slot, buffer) ->
+        accept_buffer(state, buffer)
+
+      Slot.old?(state.current_slot, buffer) ->
         {[notify_parent: {:frame_dropped, buffer.pts, state.current_slot.starts_at}], state}
+
+      true ->
+        advance_slot_and_retry(state, buffer)
+    end
+  end
+
+  defp accept_buffer(state, buffer) do
+    slot =
+      if state.stall_policy == :halt do
+        %{state.current_slot | buffer: %{buffer | dts: nil}}
       else
-        # Only push slot to queue if it has a buffer (don't push empty slots)
-        queue =
-          if state.current_slot.buffer != nil and not state.current_slot_in_queue? do
-            :queue.in(state.current_slot, state.queue)
-          else
-            state.queue
-          end
-
-        current_slot =
-          if state.stall_policy == :duplicate and state.loading? and
-               state.current_slot.buffer != nil do
-            Slot.next(state.current_slot)
-          else
-            Slot.next_empty(state.current_slot)
-          end
-
-        push_buffer(
-          %{state | queue: queue, current_slot: current_slot, current_slot_in_queue?: false},
-          buffer
-        )
+        Slot.set(state.current_slot, buffer)
       end
+
+    state = %{state | current_slot: slot, last_buffer: slot.buffer}
+
+    state = maybe_enqueue_current_slot(state)
+
+    {[], state}
+  end
+
+  defp advance_slot_and_retry(state, buffer) do
+    queue =
+      if state.current_slot.buffer != nil and not state.current_slot_in_queue? do
+        :queue.in(state.current_slot, state.queue)
+      else
+        state.queue
+      end
+
+    current_slot =
+      if state.stall_policy == :duplicate and state.loading? and
+           state.current_slot.buffer != nil do
+        Slot.next(state.current_slot)
+      else
+        Slot.next_empty(state.current_slot)
+      end
+
+    do_push_buffer(
+      %{state | queue: queue, current_slot: current_slot, current_slot_in_queue?: false},
+      buffer
+    )
+  end
+
+  defp maybe_enqueue_current_slot(state) do
+    if state.loading? or state.current_slot_in_queue? do
+      state
+    else
+      %{state | queue: :queue.in(state.current_slot, state.queue), current_slot_in_queue?: true}
     end
   end
 

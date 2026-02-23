@@ -7,7 +7,8 @@ defmodule Membrane.LiveFramerateConverter.SlotTest do
   describe "Slot.new/2" do
     test "creates slot with correct time windows" do
       starts_at = 0
-      duration = 33_333_333  # ~33.33ms (30fps)
+      # ~33.33ms (30fps)
+      duration = 33_333_333
 
       slot = Slot.new(starts_at, duration)
 
@@ -17,8 +18,10 @@ defmodule Membrane.LiveFramerateConverter.SlotTest do
     end
 
     test "works with non-zero start times" do
-      starts_at = 100_000_000  # 100ms
-      duration = 16_666_667  # ~16.67ms (60fps)
+      # 100ms
+      starts_at = 100_000_000
+      # ~16.67ms (60fps)
+      duration = 16_666_667
 
       slot = Slot.new(starts_at, duration)
 
@@ -43,7 +46,8 @@ defmodule Membrane.LiveFramerateConverter.SlotTest do
     end
 
     test "maintains slot duration across multiple next calls" do
-      slot = Slot.new(0, 40_000_000)  # 25fps
+      # 25fps
+      slot = Slot.new(0, 40_000_000)
       slot = %{slot | buffer: %Buffer{pts: 0, payload: "a"}}
 
       slot2 = Slot.next(slot)
@@ -109,7 +113,13 @@ defmodule Membrane.LiveFramerateConverter.SlotTest do
   describe "Slot.set/2" do
     test "assigns buffer to slot with normalized PTS" do
       slot = Slot.new(100_000_000, 33_333_333)
-      buffer = %Buffer{pts: 115_000_000, dts: 115_000_000, payload: "test", metadata: %{key: "value"}}
+
+      buffer = %Buffer{
+        pts: 115_000_000,
+        dts: 115_000_000,
+        payload: "test",
+        metadata: %{key: "value"}
+      }
 
       slot = Slot.set(slot, buffer)
 
