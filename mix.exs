@@ -4,7 +4,7 @@ defmodule Membrane.LiveFramerateConverter.MixProject do
   def project do
     [
       app: :membrane_live_framerate_converter_plugin,
-      version: "1.0.0",
+      version: "1.1.0",
       elixir: "~> 1.19",
       start_permanent: Mix.env() == :prod,
       source_url: "https://github.com/kim-company/membrane_live_framerate_converter_plugin",
